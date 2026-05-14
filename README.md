@@ -28,6 +28,40 @@ The easiest way to fix this is the built-in button in the add-on:
 Eloquence should now load on secure and logon screens. You only need to do this
 once per add-on update.
 
+## Troubleshooting
+
+### "Could not load the synthesizer" after upgrading
+
+If you upgraded from v16 (or earlier) to v17+ and NVDA reports **"Could not load
+the synthesizer"** when you select Eloquence, the NVDA log most likely shows:
+
+```
+AttributeError: module 'synthDrivers._ipc' has no attribute 'create_listener'
+```
+
+This is caused by one or more of:
+
+- Stale Python bytecode (`__pycache__`) left over from the previous version.
+- A half-finished NVDA upgrade leaving an `Eloquence.delete` folder alongside
+  the new install.
+- The IBMTTS add-on also being installed — running both at the same time is
+  not supported.
+
+To recover, do a clean reinstall:
+
+1. In NVDA, open **Tools → Manage Add-ons**, disable Eloquence, and restart
+   NVDA so the disable takes effect.
+2. In File Explorer, open `%APPDATA%\nvda\addons\` and delete the entire
+   `Eloquence` folder. While you're there, delete any sibling folders whose
+   names end in `.delete`.
+3. If the IBMTTS add-on is installed, disable or remove it as well.
+4. Restart NVDA, then install the latest Eloquence release fresh.
+5. As a last resort, back up `%APPDATA%\nvda` and remove it to start with a
+   clean NVDA config.
+
+See [issue #101](https://github.com/fastfinge/eloquence_64/issues/101) for the
+background.
+
 ## Building
 
 ### Prerequisites

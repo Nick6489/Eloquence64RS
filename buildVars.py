@@ -30,6 +30,6 @@ addon_info = {
 	"addon_description": "Eloquence synthesizer for NVDA with 64-bit support",
 	"addon_version": _get_version(),
 	"addon_author": "NVDA User",
-	"addon_url": "https://github.com/pumper42nickel/eloquence_threshold",
+	"addon_url": "https://github.com/fastfinge/eloquence_64",
 	"addon_lastTestedNVDAVersion": "2034.1",
 }

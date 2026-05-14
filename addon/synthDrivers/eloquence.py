@@ -113,7 +113,7 @@ for code, lang in VOICE_BCP47.items():
 
 variants = {
 	1: "Reed",
-	2: "Shelley",
+	2: "Shelly",
 	3: "Bobby",
 	4: "Rocko",
 	5: "Glen",

@@ -3244,7 +3244,7 @@ Choosing a Speaker
 ECI annotations for each language and speaker, as indicated. 
 ECI Annotation Description
 `l1.0 `v1 Set voice to the “Reed,” the American English adult male voice.
-`l1.0 `v2 Set voice to “Shelley,” the American English adult female voice.
+`l1.0 `v2 Set voice to “Shelly,” the American English adult female voice.
 `l1.0 `v3 Set voice to “Sandy,” the American English child voice.
 `l1.0 `v7 Set voice to “Grandma,” the American English elderly female voice.
 `l1.0 `v8 Set voice to “Grandpa,” the American English elderly male voice.
