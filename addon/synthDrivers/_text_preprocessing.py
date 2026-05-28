@@ -33,6 +33,8 @@ english_fixes = {
 	): r"\1 \2",
 	# caesure / cæsure crash
 	re.compile(r"c(ae|\xe6)sur(e)?", re.I): r"seizur",
+	# Em dash immediately followed by right double quote stalls Eloquence 17.
+	re.compile(r"\u2014\u201d"): '\u2014 "',
 	# h' + r/v + e crash
 	re.compile(r"\b(|\d+|\W+)h'(r|v)[e]", re.I): r"\1h \2e",
 	# Consonant cluster + hhes + word continuation (variant 1)
