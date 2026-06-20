@@ -474,6 +474,39 @@ VOICE_ID_TO_LANG = {voice_id: lang_code for lang_code, (voice_id, _) in langs.it
 _current_lang = "enu"
 
 
+def _ascii_safe_dir(directory):
+	"""Return *directory* in a form the ANSI ECI engine can open.
+
+	The 32-bit ECI engine opens the ``.syn`` voice files named in ECI.INI with
+	ANSI file APIs, and we rewrite those entries through a latin-1 round-trip.
+	Both break when the add-on lives under a folder whose name contains
+	characters outside Latin-1/the system code page (e.g. ``C:\\Users\\测试``):
+	the latin-1 write raises ``UnicodeEncodeError`` and, even if it didn't, the
+	engine could not open the path.  For such folders we substitute the Windows
+	8.3 short path, which is pure ASCII and therefore safe for both the write
+	and the engine's ANSI open.  Pure-ASCII folders (the common case) are
+	returned unchanged, and if short names are unavailable we fall back to the
+	original directory rather than failing.
+	"""
+	try:
+		directory.encode("ascii")
+		return directory
+	except UnicodeEncodeError:
+		pass
+	import ctypes
+	from ctypes import wintypes
+
+	get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+	get_short_path.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+	get_short_path.restype = wintypes.DWORD
+	needed = get_short_path(directory, None, 0)
+	if needed:
+		buffer = ctypes.create_unicode_buffer(needed)
+		if get_short_path(directory, buffer, needed):
+			return buffer.value
+	return directory
+
+
 def _sync_eci_ini_paths(eloquence_dir):
 	"""Rewrite the absolute ``Path=`` entries in ECI.INI to the current location.
 
@@ -492,9 +525,14 @@ def _sync_eci_ini_paths(eloquence_dir):
 	# re-anchor it to the real add-on directory.
 	path_re = re.compile(r"(?im)^(\s*Path\s*=\s*).*?[\\/]?([^\\/\r\n]+\.syn)\s*$")
 
+	# Anchor to an ASCII-safe form of the directory so the latin-1 write below
+	# cannot raise and the ANSI ECI engine can open the resulting path even when
+	# the add-on lives under a non-Latin-1 folder name.
+	safe_dir = _ascii_safe_dir(eloquence_dir)
+
 	def _replace(match):
 		filename = match.group(2)
-		new_path = os.path.join(eloquence_dir, filename)
+		new_path = os.path.join(safe_dir, filename)
 		return f"{match.group(1)}{new_path}"
 
 	try:
@@ -504,11 +542,18 @@ def _sync_eci_ini_paths(eloquence_dir):
 			original = f.read()
 		updated = path_re.sub(_replace, original)
 		if updated != original:
-			with open(ini_path, "w", encoding="latin-1") as f:
-				f.write(updated)
+			# Encode before opening for write: if the new paths still are not
+			# latin-1 encodable (a non-ASCII directory on a volume where 8.3
+			# short names are disabled), this raises *before* we truncate and
+			# destroy the existing ECI.INI, leaving the prior file intact.
+			data = updated.encode("latin-1")
+			with open(ini_path, "wb") as f:
+				f.write(data)
 			LOGGER.info("Updated ECI.INI voice paths for current location: %s", eloquence_dir)
-	except OSError:
-		# Read-only locations (e.g. secure screen systemConfig) are best-effort.
+	except (OSError, UnicodeError):
+		# Read-only locations (e.g. secure screen systemConfig), or paths that
+		# still cannot be encoded (8.3 short names disabled on the volume), are
+		# best-effort; never abort initialize() over a failed INI rewrite.
 		LOGGER.exception("Could not update ECI.INI voice paths")
 
 
