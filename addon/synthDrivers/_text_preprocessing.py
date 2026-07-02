@@ -12,6 +12,14 @@ import unicodedata
 
 from ._script_conversion import convert_traditional_to_simplified
 
+
+# Eloquence can finish synthesis without delivering a following Speech Index
+# when an em dash is the final punctuation in a text block.  A comma preserves
+# the intended phrase break without exposing the legacy parser to U+2014 in
+# this position.  Include common closing quotes/brackets in the lookahead
+# because NVDA's symbol processing may preserve or remove them.
+_PHRASE_FINAL_EM_DASH = re.compile(r"\u2014(?=[\"'\u2019\u201d)\]}]*\s*$)")
+
 # ---------------------------------------------------------------------------
 # Crash prevention dictionaries
 # ---------------------------------------------------------------------------
@@ -195,6 +203,7 @@ def _resub(dct, s):
 # ---------------------------------------------------------------------------
 def preprocess(text, voice_id):
 	"""Apply crash prevention fixes and text normalization for *voice_id*."""
+	text = _PHRASE_FINAL_EM_DASH.sub(",", text)
 	# CHS and KOR get English fixes (they render embedded English text)
 	if voice_id in _ENGLISH_IDS + _CHINESE_ID + _KOREAN_ID:
 		text = _resub(english_fixes, text)
