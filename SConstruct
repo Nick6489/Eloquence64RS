@@ -39,6 +39,7 @@ for po in poFiles:
 # --- Validate required binaries -------------------------------------------
 
 eci_dir = addonDir / "synthDrivers" / "eloquence"
+# The 32-bit Rust host is the only out-of-process Eloquence implementation.
 host_exe = addonDir / "synthDrivers" / "eloquence_host32.exe"
 
 required_proprietary = [eci_dir / "ECI.DLL"] + [

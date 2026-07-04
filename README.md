@@ -1,122 +1,83 @@
 # Eloquence for NVDA
 
-Eloquence synthesizer add-on for NVDA with full 64-bit support.
+Eloquence synthesizer add-on for 64-bit NVDA.
 
 ## 64-bit support
 
-The Eloquence DLL is 32-bit only. This add-on launches the Eloquence Host
-Process (`eloquence_host32.exe`) to load the Eloquence Engine and stream audio
-back to 64-bit NVDA. The integration is transparent — no additional Python
-installation or manual steps are required.
+The Eloquence DLL is 32-bit only. The add-on therefore ships a small 32-bit
+Rust Host Process, `synthDrivers/eloquence_host32.exe`. NVDA's in-process Python
+synth driver launches it and exchanges authenticated, versioned frames over the
+child's standard-input and standard-output pipes. No helper interpreter,
+listening socket, or host-selection environment variable is used.
 
-For development scenarios where the prebuilt Eloquence Host Process executable is unavailable,
-the `ELOQUENCE_HOST_COMMAND` environment variable can be set to the command that
-launches a compatible 32-bit Python interpreter with `host_eloquence32.py`.
+The host creates a private staged copy of the Eloquence DLL and `ECI.INI` for
+each run. It re-anchors `Path=` and `Path_Rom=` entries in that private copy, so
+the installed configuration is never rewritten. If the executable cannot
+start, authenticate, or initialize ECI, synth initialization fails with the
+cause logged; NVDA can then select its next available synthesizer.
 
 ## Traditional Chinese Script Conversion
 
-When the Mandarin Chinese voice is selected, Text Preprocessing applies Script
-Conversion before text is sent to the Eloquence Engine. Traditional Chinese
-text is read via Traditional→Simplified conversion with the Mandarin Chinese
-voice.
-
-This is not zh-TW support, a Traditional Chinese voice, or Cantonese support.
-The add-on's Chinese Voice Identity still advertises only `zh-CN`.
+When the Mandarin Chinese voice is selected, text preprocessing converts
+Traditional Chinese text to Simplified Chinese before sending it to Eloquence.
+This supplies Mandarin readings; it is not a Traditional Chinese voice or
+Cantonese support. The add-on advertises only `zh-CN`.
 
 Known limitations:
 
 - Hong Kong (`zh-HK`) users get Mandarin readings, not Cantonese.
-- Colloquial written-Cantonese characters, such as `嘅`, `哋`, and `咗`,
-  are unpronounceable.
-- A zh-TW-localized NVDA install does not auto-select the Chinese voice on
-  first run. Users need to pick the Chinese voice once manually.
+- Colloquial written-Cantonese characters may be unpronounceable.
+- A zh-TW-localized NVDA install does not auto-select the Chinese voice on first
+  run; select the Chinese voice once manually.
 
-## Eloquence on secure screens (logon, UAC, start-up)
+## Eloquence on secure screens
 
-NVDA does **not** copy `*.exe` files to its Secure Screen configuration for
-security reasons, so the Eloquence Host Process is missing after you click
-**"Use currently saved settings during sign-in"** in NVDA's General settings.
-
-The easiest way to fix this is the built-in button in the add-on:
+NVDA does not copy executables to its secure-screen configuration. After using
+NVDA's **Use currently saved settings during sign-in** command:
 
 1. Open **NVDA Settings > Eloquence**.
-2. Click **"Copy Helper to System Config (for Logon Screen)"**.
-3. Accept the UAC elevation prompt.
+2. Choose **Copy Helper to System Config (for Logon Screen)**.
+3. Accept the UAC prompt.
 
-Eloquence should now load on Secure Screens. You only need to do this
-once per add-on update.
-
-## Troubleshooting
-
-### "Could not load the synthesizer" after upgrading
-
-If you upgraded from v16 (or earlier) to v17+ and NVDA reports **"Could not load
-the synthesizer"** when you select Eloquence, the NVDA log most likely shows:
-
-```
-AttributeError: module 'synthDrivers._ipc' has no attribute 'create_listener'
-```
-
-This is caused by one or more of:
-
-- Stale Python bytecode (`__pycache__`) left over from the previous version.
-- A half-finished NVDA upgrade leaving an `Eloquence.delete` folder alongside
-  the new install.
-- The IBMTTS add-on also being installed — running both at the same time is
-  not supported.
-
-To recover, do a clean reinstall:
-
-1. In NVDA, open **Tools → Manage Add-ons**, disable Eloquence, and restart
-   NVDA so the disable takes effect.
-2. In File Explorer, open `%APPDATA%\nvda\addons\` and delete the entire
-   `Eloquence` folder. While you're there, delete any sibling folders whose
-   names end in `.delete`.
-3. If the IBMTTS add-on is installed, disable or remove it as well.
-4. Restart NVDA, then install the latest Eloquence release fresh.
-5. As a last resort, back up `%APPDATA%\nvda` and remove it to start with a
-   clean NVDA config.
-
-See [issue #101](https://github.com/fastfinge/eloquence_64/issues/101) for the
-background.
+Repeat this after each add-on update so the secure-screen copy of the native
+host matches the installed add-on.
 
 ## Building
 
-### Prerequisites
+Prerequisites are 64-bit Python 3.13, [uv](https://docs.astral.sh/uv/), a stable
+Rust MSVC toolchain, and its `i686-pc-windows-msvc` target:
 
-- [Python Install Manager](https://www.python.org/ftp/python/pymanager/python-manager-25.0.msix) (`.msix`)
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- 32-bit Python 3.13: `py install 3.13-32`
-
-### Build steps
-
-```bash
-git submodule init && git submodule update   # fetch pronunciation dictionaries
-python fetch_eci.py                          # one-time: download proprietary ECI.DLL + voice data
-build_host.cmd                               # compile Eloquence Host Process (only needed if host_eloquence32.py changes)
-scons.bat                                    # package everything into the .nvda-addon file
+```powershell
+rustup target add i686-pc-windows-msvc
+git submodule update --init
+python fetch_eci.py
+build_host.cmd
+scons.bat
 ```
 
-**Note:** `scons.bat` validates that proprietary files and the Eloquence Host
-Process executable exist, but does not fetch or build them — steps 2 and 3 must
-be done first.
+`build_host.cmd` builds the statically linked i686 Rust release executable and
+copies it to `addon/synthDrivers/eloquence_host32.exe`. `scons.bat` validates
+that this executable and the proprietary Eloquence files exist before creating
+the `.nvda-addon` package.
 
-### Development checks
+Development checks:
 
-```bash
-runlint.bat      # run Ruff using the locked uv environment
-runpytest.bat    # run pytest using the locked uv environment
+```powershell
+runlint.bat
+runpytest.bat
+cargo fmt --manifest-path native_host/Cargo.toml --check
+cargo test --manifest-path native_host/Cargo.toml
+cargo clippy --manifest-path native_host/Cargo.toml --all-targets -- -D warnings
 ```
 
-Tooling dependencies are pinned in `pyproject.toml` and `uv.lock`, following
-NVDA's current dependency-group pattern. The Eloquence Host Process build uses a
-separate `.venv32` environment so PyInstaller can run under 32-bit Python
-without replacing the normal development `.venv`.
+Real ECI and child-process tests require the i686 target and
+`ELOQUENCE_ECI_PATH` pointing to `ECI.DLL`. This variable is test input only; it
+does not alter host selection in the packaged add-on.
 
-### Experimental native host
+## Troubleshooting upgrades
 
-The Rust host is opt-in while parity testing is in progress. Install the
-`i686-pc-windows-msvc` Rust target, run `build_native_host.cmd`, package the
-add-on normally, and set `ELOQUENCE_NATIVE_HOST=1` before starting NVDA. If the
-native executable cannot start or initialize Eloquence, the add-on logs the
-failure and automatically starts the existing Python host instead.
+If an upgrade leaves stale add-on files, disable Eloquence, restart NVDA, remove
+the old `Eloquence` and any `Eloquence.delete` directories under
+`%APPDATA%\nvda\addons`, then install the current package cleanly. Running the
+IBMTTS and Eloquence add-ons together is unsupported. See
+[issue #101](https://github.com/fastfinge/eloquence_64/issues/101) for background.

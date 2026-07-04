@@ -10,7 +10,7 @@ name = "eloquence_native_host"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eloquence_host32_native"
+name = "eloquence_host32"
 path = "src/main.rs"
 
 [profile.release]

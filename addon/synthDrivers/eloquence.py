@@ -152,7 +152,7 @@ class EloquenceSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			if globalVars.appArgs.secure:
 				self.updateButton.Disable()
 
-			# Tool to automate copying eloquence_host32.exe for 64-bit NVDA secure screens
+			# Copy the native host because NVDA excludes executables from its normal secure-screen copy.
 			self.copyHelperButton = sHelper.addItem(
 				# Translators: Label of a button in the Eloquence category of the settings dialog
 				wx.Button(self, label=_("Copy Helper to System Config (for Logon Screen)"))
@@ -175,7 +175,7 @@ class EloquenceSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			# Panel creation failed, but don't crash - synth will still work
 
 	def onCopyHelper(self, evt):
-		"""Copies eloquence_host32.exe with UAC elevation support and definitive feedback."""
+		"""Copy the native Eloquence host to NVDA's secure-screen configuration."""
 		source_file = os.path.normpath(os.path.join(os.path.dirname(__file__), "eloquence_host32.exe"))
 		prog_files = os.environ.get("ProgramFiles", "C:\\Program Files")
 		target_addon_dir = os.path.normpath(

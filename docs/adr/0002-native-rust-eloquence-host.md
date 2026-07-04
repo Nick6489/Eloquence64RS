@@ -1,6 +1,6 @@
-# Replace the Python Eloquence Host Process with an opt-in Rust host
+# Introduce an opt-in Rust Eloquence Host Process
 
-Status: Proposed
+Status: Superseded by ADR 0003
 
 ## Context
 

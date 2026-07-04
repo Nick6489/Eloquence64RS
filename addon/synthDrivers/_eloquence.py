@@ -5,16 +5,13 @@ from __future__ import annotations
 import itertools
 import logging
 import os
-import socket
 
 import queue
-import shlex
 import subprocess
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from . import _eloquence_ipc as _ipc
 from ._eloquence_native import NativeHostConnection
 
 import config
@@ -24,8 +21,6 @@ from buildVersion import version_year
 LOGGER = logging.getLogger(__name__)
 
 HOST_EXECUTABLE = "eloquence_host32.exe"
-HOST_SCRIPT = "host_eloquence32.py"
-NATIVE_HOST_EXECUTABLE = "eloquence_host32_native.exe"
 AUTH_KEY_BYTES = 16
 
 
@@ -70,7 +65,7 @@ class AudioWorker(threading.Thread):
 				if not self._stopping:
 					if index is not None:
 						# The host emits indexes as separate zero-length chunks.
-						# Queue a silent sample so WavePlayer invokes the callback
+						# Queue a zero-byte marker so WavePlayer invokes the callback
 						# after preceding audio, while later audio can still be fed.
 						self._queue_index_marker(index)
 					if is_final:
@@ -165,7 +160,6 @@ AudioChunk = Tuple[bytes, Optional[int], bool, int]
 class HostProcess:
 	process: subprocess.Popen
 	connection: Any
-	listener: Optional[socket.socket]
 
 
 class EloquenceHostClient:
@@ -184,70 +178,21 @@ class EloquenceHostClient:
 		self._sequence = 0
 		self._current_seq = 0
 		self._speaking = False
-		self._using_native = False
-		self._force_python = False
 
 	# ------------------------------------------------------------------
 	def ensure_started(self) -> None:
 		if self._host:
 			return
 		addon_dir = os.path.abspath(os.path.dirname(__file__))
-		if self._native_host_requested() and not self._force_python:
-			try:
-				self._host = self._start_native_host(addon_dir)
-				self._using_native = True
-			except Exception:
-				LOGGER.exception("Native Eloquence host failed to start; falling back to Python host")
-		if not self._host:
-			self._host = self._start_python_host(addon_dir)
-			self._using_native = False
+		self._host = self._start_host(addon_dir)
 		self._receiver = threading.Thread(target=self._receiver_loop, daemon=True)
 		self._receiver.start()
 
-	def _start_python_host(self, addon_dir: str) -> HostProcess:
+	def _start_host(self, addon_dir: str) -> HostProcess:
 		authkey = os.urandom(AUTH_KEY_BYTES)
-		listener = _ipc.create_listener()
-		port = listener.getsockname()[1]
-		cmd = list(self._resolve_host_executable(addon_dir))
-		cmd.extend(
-			[
-				"--address",
-				f"127.0.0.1:{port}",
-				"--authkey",
-				authkey.hex(),
-				"--log-dir",
-				addon_dir,
-			]
-		)
-		LOGGER.info("Launching Eloquence host: %s", cmd)
-		proc = subprocess.Popen(cmd, cwd=addon_dir)
-		try:
-			conn = _ipc.accept_authenticated(listener, authkey)
-		except (TimeoutError, OSError) as exc:
-			LOGGER.error("Eloquence host failed to connect: %s", exc)
-			exit_code = proc.poll()
-			if exit_code is not None:
-				LOGGER.error("Host process already exited with code %s", exit_code)
-			try:
-				proc.terminate()
-				proc.wait(timeout=2)
-			except Exception:
-				try:
-					proc.kill()
-				except Exception:
-					pass
-			try:
-				listener.close()
-			except Exception:
-				pass
-			raise RuntimeError(f"Eloquence host process failed to start: {exc}") from exc
-		return HostProcess(process=proc, connection=conn, listener=listener)
-
-	def _start_native_host(self, addon_dir: str) -> HostProcess:
-		authkey = os.urandom(AUTH_KEY_BYTES)
-		cmd = list(self._resolve_native_host_executable(addon_dir))
+		cmd = [self._resolve_host_executable(addon_dir)]
 		cmd.extend(["--auth-key", authkey.hex()])
-		LOGGER.info("Launching native Eloquence host: %s", cmd)
+		LOGGER.info("Launching Eloquence host: %s", cmd)
 		proc = subprocess.Popen(
 			cmd,
 			cwd=addon_dir,
@@ -277,7 +222,7 @@ class EloquenceHostClient:
 		if isinstance(connection, BaseException):
 			self._terminate_process(proc)
 			raise RuntimeError(f"native Eloquence host handshake failed: {connection}") from connection
-		return HostProcess(process=proc, connection=connection, listener=None)
+		return HostProcess(process=proc, connection=connection)
 
 	@staticmethod
 	def _terminate_process(process: subprocess.Popen) -> None:
@@ -290,37 +235,11 @@ class EloquenceHostClient:
 			except Exception:
 				pass
 
-	@staticmethod
-	def _native_host_requested() -> bool:
-		return os.environ.get("ELOQUENCE_NATIVE_HOST", "").strip().lower() in {"1", "true", "yes", "on"}
-
-	def _resolve_host_executable(self, addon_dir: str) -> Sequence[str]:
-		override = os.environ.get("ELOQUENCE_HOST_COMMAND")
-		if override:
-			return shlex.split(override)
+	def _resolve_host_executable(self, addon_dir: str) -> str:
 		exe_path = os.path.join(addon_dir, HOST_EXECUTABLE)
 		if os.path.exists(exe_path):
-			return [exe_path]
-		script_path = os.path.join(addon_dir, HOST_SCRIPT)
-		if os.path.exists(script_path):
-			raise RuntimeError(
-				"Eloquence helper executable was not found."
-				" Provide a 32-bit host via the ELOQUENCE_HOST_COMMAND environment"
-				" variable when developing the add-on."
-			)
+			return exe_path
 		raise RuntimeError("Eloquence helper resources missing from add-on package")
-
-	def _resolve_native_host_executable(self, addon_dir: str) -> Sequence[str]:
-		override = os.environ.get("ELOQUENCE_NATIVE_HOST_COMMAND")
-		if override:
-			return shlex.split(override)
-		exe_path = os.path.join(addon_dir, NATIVE_HOST_EXECUTABLE)
-		if os.path.exists(exe_path):
-			return [exe_path]
-		raise RuntimeError(
-			"Native Eloquence helper executable was not found."
-			" Set ELOQUENCE_NATIVE_HOST_COMMAND when developing the add-on."
-		)
 
 	# ------------------------------------------------------------------
 	def initialize_audio(self) -> None:
@@ -358,15 +277,6 @@ class EloquenceHostClient:
 		while True:
 			try:
 				message = connection.recv()
-			except socket.timeout:
-				if self._host and self._host.process.poll() is not None:
-					LOGGER.error("Host process exited (code %s)", self._host.process.returncode)
-					for msg_id, event in list(self._pending.items()):
-						self._responses[msg_id] = {"error": "hostExited"}
-						event.set()
-					self._pending.clear()
-					break
-				continue  # Host still alive, just busy
 			except (EOFError, ConnectionAbortedError, OSError):
 				LOGGER.info("Host connection closed")
 				for msg_id, event in list(self._pending.items()):
@@ -446,10 +356,9 @@ class EloquenceHostClient:
 					}
 				)
 			except (ConnectionResetError, BrokenPipeError, OSError):
-				# Patch for termination errors
 				if wait:
 					self._pending.pop(msg_id, None)
-				return {}
+				raise
 			except Exception:
 				if wait:
 					self._pending.pop(msg_id, None)
@@ -495,11 +404,6 @@ class EloquenceHostClient:
 			self._host.connection.close()
 		except Exception:
 			pass
-		if self._host.listener:
-			try:
-				self._host.listener.close()
-			except Exception:
-				pass
 		try:
 			self._host.process.terminate()
 			self._host.process.wait(timeout=2)
@@ -510,7 +414,6 @@ class EloquenceHostClient:
 			except Exception:
 				pass
 		self._host = None
-		self._using_native = False
 
 
 _client = EloquenceHostClient()
@@ -573,147 +476,34 @@ VOICE_ID_TO_LANG = {voice_id: lang_code for lang_code, (voice_id, _) in langs.it
 _current_lang = "enu"
 
 
-def _ascii_safe_dir(directory):
-	"""Return *directory* as an ASCII path the ANSI ECI engine can open, or ``None``.
-
-	The 32-bit ECI engine opens the ``.syn`` voice files named in ECI.INI with
-	ANSI file APIs, and we rewrite those entries through a latin-1 round-trip.
-	Both break when the add-on lives under a folder whose name contains
-	characters outside Latin-1/the system code page (e.g. ``C:\\Users\\测试``):
-	the latin-1 write raises ``UnicodeEncodeError`` and, even if it didn't, the
-	engine could not open the path.  A folder that is non-ASCII yet latin-1
-	encodable (e.g. ``café``) is just as unsafe: the latin-1 write succeeds but
-	produces bytes the UTF-8 host cannot decode.  For such folders we substitute
-	the Windows 8.3 short path, which is pure ASCII and therefore safe for both
-	the write and the engine's ANSI open.  Pure-ASCII folders (the common case)
-	are returned unchanged.  When no ASCII form is available -- 8.3 short names
-	disabled on the volume, or a short name that is itself non-ASCII -- we return
-	``None`` so the caller can leave ECI.INI untouched rather than write a file
-	the UTF-8 host cannot read.
-	"""
-	try:
-		directory.encode("ascii")
-		return directory
-	except UnicodeEncodeError:
-		pass
-	import ctypes
-	from ctypes import wintypes
-
-	get_short_path = ctypes.windll.kernel32.GetShortPathNameW
-	get_short_path.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
-	get_short_path.restype = wintypes.DWORD
-	needed = get_short_path(directory, None, 0)
-	if needed:
-		buffer = ctypes.create_unicode_buffer(needed)
-		if get_short_path(directory, buffer, needed):
-			short_path = buffer.value
-			try:
-				short_path.encode("ascii")
-			except UnicodeEncodeError:
-				return None
-			return short_path
-	return None
-
-
-def _sync_eci_ini_paths(eloquence_dir):
-	"""Rewrite the absolute ``Path=`` entries in ECI.INI to the current location.
-
-	The ECI engine reads each language's ``.syn`` voice file via an absolute
-	path stored in ECI.INI.  When the add-on is copied to a portable NVDA, a
-	different Windows account, or any other folder, those baked-in paths no
-	longer exist and Eloquence fails to load.  Rewriting them on every start
-	makes the add-on self-healing regardless of where it lives or who runs it.
-	"""
-	import re
-
-	ini_path = os.path.join(eloquence_dir, "ECI.INI")
-	if not os.path.isfile(ini_path):
-		return
-	# Match "Path=<anything>\<name>.syn", keeping only the file name so we can
-	# re-anchor it to the real add-on directory.
-	path_re = re.compile(r"(?im)^(\s*Path\s*=\s*).*?[\\/]?([^\\/\r\n]+\.syn)\s*$")
-
-	# Anchor to an ASCII-only form of the directory.  ASCII is a subset of both
-	# latin-1 (our lossless write encoding) and UTF-8 (how host_eloquence32.py
-	# reads ECI.INI back), so an ASCII path is safe for the write, the ANSI ECI
-	# engine's open, and the host's later UTF-8 read alike.  When no ASCII form
-	# is available -- a non-ASCII add-on folder on a volume with 8.3 short names
-	# disabled -- leave ECI.INI untouched and continue startup rather than write
-	# a latin-1 file the UTF-8 host could not read.
-	safe_dir = _ascii_safe_dir(eloquence_dir)
-	if safe_dir is None:
-		LOGGER.warning(
-			"Skipping ECI.INI voice path update: no ASCII-safe form of %s is "
-			"available (enable 8.3 short name creation or move the add-on to an "
-			"ASCII path)",
-			eloquence_dir,
-		)
-		return
-
-	# Past the guard above, safe_dir is guaranteed non-None; bind it to a local
-	# the _replace closure can use without it re-widening to ``str | None``.
-	anchor_dir = safe_dir
-
-	def _replace(match):
-		filename = match.group(2)
-		new_path = os.path.join(anchor_dir, filename)
-		return f"{match.group(1)}{new_path}"
-
-	try:
-		# latin-1 is a lossless byte<->char mapping, so we never corrupt the
-		# binary-ish ECI.INI content while editing only the Path lines, and
-		# because safe_dir is ASCII every rewritten Path line stays UTF-8-clean.
-		with open(ini_path, "r", encoding="latin-1") as f:
-			original = f.read()
-		updated = path_re.sub(_replace, original)
-		if updated != original:
-			# Encode before opening for write so any unexpected encoding failure
-			# raises *before* we truncate and destroy the existing ECI.INI,
-			# leaving the prior file intact.
-			data = updated.encode("latin-1")
-			with open(ini_path, "wb") as f:
-				f.write(data)
-			LOGGER.info("Updated ECI.INI voice paths for current location: %s", eloquence_dir)
-	except (OSError, UnicodeError):
-		# Read-only locations (e.g. secure screen systemConfig) are best-effort;
-		# never abort initialize() over a failed INI rewrite.  UnicodeError stays
-		# a defensive backstop -- the ASCII safe_dir makes the write encodable,
-		# but a best-effort rewrite must never crash startup.
-		LOGGER.exception("Could not update ECI.INI voice paths")
-
-
 def initialize(indexCallback=None):
 	global onIndexReached, _current_lang
 	eci_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "eloquence", "eci.dll"))
-	# Repair ECI.INI before the host loads the engine so voices resolve no
-	# matter where this add-on folder was copied from.
-	_sync_eci_ini_paths(os.path.dirname(eci_path))
-	_client.ensure_started()
-	_client.initialize_audio()
-	_ensure_synth_worker()
-	onIndexReached = indexCallback
-	voice_conf = config.conf.get("speech", {}).get("eci", {})
-	_current_lang = voice_conf.get("voice", "enu")
-	payload = {
-		"eciPath": eci_path,
-		"dataDirectory": os.path.join(os.path.dirname(eci_path)),
-		"language": _current_lang,
-		"languageId": langs.get(_current_lang, langs["enu"])[0],
-		"enableAbbreviationDict": config.conf.get("speech", {}).get("eci", {}).get("ABRDICT", False),
-		"enablePhrasePrediction": config.conf.get("speech", {}).get("eci", {}).get("phrasePrediction", False),
-		"voiceVariant": int(voice_conf.get("variant", 0) or 0),
-	}
 	try:
-		response = _client.send_command("initialize", **payload)
-	except Exception:
-		if not _client._using_native:
-			raise
-		LOGGER.exception("Native Eloquence initialization failed; restarting with Python host")
-		_client.shutdown()
-		_client._force_python = True
 		_client.ensure_started()
 		_client.initialize_audio()
+		_ensure_synth_worker()
+		onIndexReached = indexCallback
+		voice_conf = config.conf.get("speech", {}).get("eci", {})
+		_current_lang = voice_conf.get("voice", "enu")
+		payload = {
+			"eciPath": eci_path,
+			"dataDirectory": os.path.join(os.path.dirname(eci_path)),
+			"language": _current_lang,
+			"languageId": langs.get(_current_lang, langs["enu"])[0],
+			"enableAbbreviationDict": config.conf.get("speech", {}).get("eci", {}).get("ABRDICT", False),
+			"enablePhrasePrediction": config.conf.get("speech", {}).get("eci", {}).get("phrasePrediction", False),
+			"voiceVariant": int(voice_conf.get("variant", 0) or 0),
+		}
 		response = _client.send_command("initialize", **payload)
+	except Exception:
+		LOGGER.exception("Eloquence native host initialization failed")
+		try:
+			_client.shutdown()
+		except Exception:
+			LOGGER.exception("Eloquence native host cleanup failed")
+		_stop_synth_worker()
+		raise
 	params.update(response.get("params", {}))
 	voice_params.update(response.get("voiceParams", {}))
 

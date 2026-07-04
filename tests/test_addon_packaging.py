@@ -22,6 +22,18 @@ class AddonPackagingTests(unittest.TestCase):
 			with self.subTest(file_name=file_name):
 				self.assertIn(f"synthDrivers/t2s_data/{file_name}", bundled_files)
 
+		self.assertEqual(
+			[name for name in bundled_files if name.endswith("eloquence_host32.exe")],
+			["synthDrivers/eloquence_host32.exe"],
+		)
+		for retired_file in (
+			"eloquence_host32_native.exe",
+			"host_eloquence32.py",
+			"_eloquence_ipc.py",
+		):
+			with self.subTest(retired_file=retired_file):
+				self.assertFalse(any(name.endswith(retired_file) for name in bundled_files))
+
 
 if __name__ == "__main__":
 	unittest.main()

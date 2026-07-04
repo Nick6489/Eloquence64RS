@@ -3,14 +3,14 @@ use eloquence_native_host::server;
 
 fn main() {
     if cfg!(not(target_pointer_width = "32")) {
-        eprintln!("eloquence_host32_native must be built for a 32-bit target");
+        eprintln!("eloquence_host32 must be built for a 32-bit target");
         std::process::exit(2);
     }
     let key = match authentication_key(std::env::args().skip(1)) {
         Ok(key) => key,
         Err(message) => {
             eprintln!("{message}");
-            eprintln!("usage: eloquence_host32_native --auth-key <32 hex digits>");
+            eprintln!("usage: eloquence_host32 --auth-key <32 hex digits>");
             std::process::exit(2);
         }
     };

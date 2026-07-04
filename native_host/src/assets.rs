@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn preparation_reanchors_paths_already_modified_by_the_python_preflight() {
+    fn preparation_reanchors_existing_absolute_paths() {
         let root = std::env::temp_dir().join(format!(
             "eloquence-assets-reanchor-test-{}",
             std::process::id()

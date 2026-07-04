@@ -32,7 +32,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn regional_and_generic_fallbacks_match_the_python_host() {
+    fn regional_and_generic_fallbacks_match_established_behavior() {
         assert_eq!(
             candidates("eng")[0],
             vec!["engmain.dic", "enumain.dic", "main.dic"]

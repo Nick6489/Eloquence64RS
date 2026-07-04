@@ -59,9 +59,6 @@ required-version = ">=0.9"
 dev = [
 	"SCons==4.10.1",
 ]
-host-build = [
-	"pyinstaller==6.17.0",
-]
 lint = [
 	"ruff==0.15.14",
 ]

@@ -46,7 +46,7 @@ fn process_synthesizes_real_pcm_over_authenticated_stdio() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_eloquence_host32_native"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_eloquence_host32"))
         .args(["--auth-key", &key_hex])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

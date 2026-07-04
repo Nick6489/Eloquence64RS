@@ -78,7 +78,7 @@ class AudioWorkerTests(unittest.TestCase):
 		module = _load_client_module()
 		client = module.EloquenceHostClient()
 		connection = Mock()
-		client._host = module.HostProcess(process=Mock(), connection=connection, listener=None)
+		client._host = module.HostProcess(process=Mock(), connection=connection)
 		waiting_started = threading.Event()
 
 		def wait_for_response():
@@ -97,6 +97,17 @@ class AudioWorkerTests(unittest.TestCase):
 			event.set()
 		thread.join(timeout=1)
 		self.assertFalse(thread.is_alive())
+
+	def test_broken_host_pipe_is_an_error(self):
+		module = _load_client_module()
+		client = module.EloquenceHostClient()
+		connection = Mock()
+		connection.send.side_effect = BrokenPipeError("host exited")
+		client._host = module.HostProcess(process=Mock(), connection=connection)
+
+		with self.assertRaises(BrokenPipeError):
+			client.send_command("initialize")
+		self.assertFalse(client._pending)
 
 
 if __name__ == "__main__":

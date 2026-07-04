@@ -18,7 +18,7 @@ def load_module():
 
 class NativeClientProcessTests(unittest.TestCase):
 	def test_legacy_client_messages_drive_real_native_host(self):
-		host = ROOT / "native_host" / "target" / "i686-pc-windows-msvc" / "debug" / "eloquence_host32_native.exe"
+		host = ROOT / "native_host" / "target" / "i686-pc-windows-msvc" / "debug" / "eloquence_host32.exe"
 		eci = Path(os.environ.get("ELOQUENCE_ECI_PATH", ROOT / "addon" / "synthDrivers" / "eloquence" / "ECI.DLL"))
 		if not host.is_file() or not eci.is_file():
 			self.skipTest("local i686 native host or proprietary ECI.DLL is unavailable")

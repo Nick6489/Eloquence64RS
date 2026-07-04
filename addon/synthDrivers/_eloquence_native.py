@@ -1,4 +1,4 @@
-"""Binary protocol adapter for the opt-in native Eloquence host."""
+"""Binary protocol adapter for the native Eloquence host."""
 
 from __future__ import annotations
 

@@ -17,19 +17,16 @@ jobs:
           fetch-depth: 0
 
       - name: Set up 64-bit Python 3.13
-        id: py64
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           architecture: x64
 
-      - name: Set up 32-bit Python 3.13
-        id: py32
-        uses: actions/setup-python@v6
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.13"
-          architecture: x86
-          update-environment: false
+          targets: i686-pc-windows-msvc
+          components: rustfmt, clippy
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -37,9 +34,18 @@ jobs:
       - name: Check locked dependencies
         run: uv lock --check
 
-      - name: Lint
+      - name: Lint Python
         run: runlint.bat
         shell: cmd
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path native_host/Cargo.toml --check
+
+      - name: Test and lint Rust (x64)
+        run: |
+          cargo test --manifest-path native_host/Cargo.toml
+          cargo clippy --manifest-path native_host/Cargo.toml --all-targets -- -D warnings
+        shell: pwsh
 
       - name: Install MSYS2 / gettext
         uses: msys2/setup-msys2@v2
@@ -54,11 +60,23 @@ jobs:
       - name: Fetch proprietary files
         run: python fetch_eci.py
 
-      - name: Build 32-bit host
+      - name: Test and lint Rust (i686 with Eloquence)
+        run: |
+          cargo test --manifest-path native_host/Cargo.toml --target i686-pc-windows-msvc
+          cargo clippy --manifest-path native_host/Cargo.toml --target i686-pc-windows-msvc --all-targets -- -D warnings
+        shell: pwsh
+        env:
+          ELOQUENCE_ECI_PATH: ${{ github.workspace }}\addon\synthDrivers\eloquence\ECI.DLL
+
+      - name: Build 32-bit native host
         run: build_host.cmd
         shell: cmd
+
+      - name: Test Python
+        run: runpytest.bat
+        shell: cmd
         env:
-          PYTHON32: ${{ steps.py32.outputs.python-path }}
+          ELOQUENCE_ECI_PATH: ${{ github.workspace }}\addon\synthDrivers\eloquence\ECI.DLL
 
       - name: Build addon
         run: scons.bat && scons.bat pot
