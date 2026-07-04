@@ -80,6 +80,7 @@ coverage.xml
 .env
 .venv
 .venv32
+/native_host/target/
 env/
 venv/
 ENV/

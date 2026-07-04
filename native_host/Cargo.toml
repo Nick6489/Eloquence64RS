@@ -1,0 +1,21 @@
+[package]
+name = "eloquence-native-host"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+publish = false
+
+[lib]
+name = "eloquence_native_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eloquence_host32_native"
+path = "src/main.rs"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = "symbols"
