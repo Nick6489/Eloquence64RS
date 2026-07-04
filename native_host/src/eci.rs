@@ -8,6 +8,7 @@ pub type EciDictionaryHandle = *mut c_void;
 pub type EciInputText = *const c_void;
 pub type EciCallback =
     unsafe extern "system" fn(EciHandle, u32, i32, *mut c_void) -> EciCallbackReturn;
+pub type OptionalEciCallback = Option<EciCallback>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
@@ -98,7 +99,8 @@ impl Error for EciLoadError {}
 
 pub type EciNewEx = unsafe extern "system" fn(i32) -> EciHandle;
 pub type EciDelete = unsafe extern "system" fn(EciHandle) -> EciHandle;
-pub type EciRegisterCallback = unsafe extern "system" fn(EciHandle, EciCallback, *mut c_void);
+pub type EciRegisterCallback =
+    unsafe extern "system" fn(EciHandle, OptionalEciCallback, *mut c_void);
 pub type EciSetOutputBuffer = unsafe extern "system" fn(EciHandle, i32, *mut i16) -> i32;
 pub type EciAddText = unsafe extern "system" fn(EciHandle, EciInputText) -> i32;
 pub type EciInsertIndex = unsafe extern "system" fn(EciHandle, i32) -> i32;

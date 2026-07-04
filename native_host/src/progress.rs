@@ -41,6 +41,10 @@ impl ProgressTracker {
         }
     }
 
+    pub fn current_generation(&self) -> Option<u64> {
+        self.active_generation()
+    }
+
     /// Records a normal ECI index callback.
     ///
     /// A later observed index proves that preceding indexes were crossed too,
