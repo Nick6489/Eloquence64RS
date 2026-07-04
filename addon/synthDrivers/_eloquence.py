@@ -34,10 +34,9 @@ class AudioWorker(threading.Thread):
 	_CHANNELS = 1
 	_BITS_PER_SAMPLE = 16
 	_SAMPLE_RATE = 11025
-	# One silent 16-bit mono sample.  Queueing this with an onDone callback
-	# places an index precisely after preceding audio without blocking the
-	# worker and starving WavePlayer's buffer.
-	_INDEX_MARKER_AUDIO = b"\x00\x00"
+	# NVDA's WASAPI player accepts a zero-byte feed with an onDone callback.
+	# It records the current stream position without adding an audible sample.
+	_INDEX_MARKER_AUDIO = b""
 
 	def __init__(
 		self,
@@ -136,7 +135,7 @@ class AudioWorker(threading.Thread):
 			self._invoke_index_callback(None)
 
 	def _queue_index_marker(self, index: int) -> None:
-		"""Queue a non-blocking playback marker for a Speech Index."""
+		"""Queue a zero-byte, non-blocking playback marker for a Speech Index."""
 		try:
 			with self._player_lock:
 				if not self._stopping and self._player:

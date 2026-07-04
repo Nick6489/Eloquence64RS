@@ -69,7 +69,7 @@ class AudioWorkerTests(unittest.TestCase):
 
 		worker.run()
 
-		self.assertEqual(events, [("feed", b"audio"), ("feed", b"\x00\x00")])
+		self.assertEqual(events, [("feed", b"audio"), ("feed", b"")])
 		self.assertIsNotNone(player.marker_callback)
 		player.marker_callback()
 		self.assertEqual(events[-1], ("index", 42))

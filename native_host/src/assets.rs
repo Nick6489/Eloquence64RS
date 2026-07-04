@@ -29,7 +29,7 @@ pub enum AssetError {
     MissingParentDirectory,
     MissingIni(PathBuf),
     Io(std::io::Error),
-    IniHasNoPlaceholder,
+    IniHasNoPaths,
 }
 
 impl fmt::Display for AssetError {
@@ -40,7 +40,7 @@ impl fmt::Display for AssetError {
             }
             Self::MissingIni(path) => write!(formatter, "ECI.INI is missing: {}", path.display()),
             Self::Io(error) => write!(formatter, "failed to prepare ECI assets: {error}"),
-            Self::IniHasNoPlaceholder => write!(formatter, "ECI.INI contains no C:\\dummy\\ paths"),
+            Self::IniHasNoPaths => write!(formatter, "ECI.INI contains no voice data paths"),
         }
     }
 }
@@ -98,17 +98,54 @@ impl PreparedEci {
         fs::copy(source_dll, directory.join("ECI.DLL"))?;
         let ini = fs::read_to_string(source_ini)?;
         let data_directory = short_path(data_directory);
-        let replacement = format!("{}\\", data_directory.display());
-        let patched = ini.replace("C:\\dummy\\", &replacement);
-        if patched == ini {
-            return Err(AssetError::IniHasNoPlaceholder);
-        }
+        let patched = reanchor_ini_paths(&ini, &data_directory).ok_or(AssetError::IniHasNoPaths)?;
         fs::write(directory.join("ECI.INI"), patched)?;
         Ok(())
     }
 
     pub fn dll_path(&self) -> &Path {
         &self.dll_path
+    }
+}
+
+fn reanchor_ini_paths(ini: &str, data_directory: &Path) -> Option<String> {
+    let mut path_count = 0;
+    let mut patched = String::with_capacity(ini.len());
+    for line in ini.split_inclusive('\n') {
+        let (content, newline) = line
+            .strip_suffix("\r\n")
+            .map(|content| (content, "\r\n"))
+            .or_else(|| line.strip_suffix('\n').map(|content| (content, "\n")))
+            .unwrap_or((line, ""));
+        let Some(equals) = content.find('=') else {
+            patched.push_str(line);
+            continue;
+        };
+        let key = content[..equals].trim();
+        if !key.eq_ignore_ascii_case("Path") && !key.eq_ignore_ascii_case("Path_Rom") {
+            patched.push_str(line);
+            continue;
+        }
+        let old_path = content[equals + 1..].trim();
+        let Some(filename) = old_path
+            .rsplit(['\\', '/'])
+            .next()
+            .filter(|name| !name.is_empty())
+        else {
+            patched.push_str(line);
+            continue;
+        };
+        patched.push_str(&content[..=equals]);
+        patched.push_str(&data_directory.display().to_string());
+        patched.push('\\');
+        patched.push_str(filename);
+        patched.push_str(newline);
+        path_count += 1;
+    }
+    if path_count == 0 {
+        None
+    } else {
+        Some(patched)
     }
 }
 
@@ -196,6 +233,34 @@ mod tests {
             fs::read_to_string(source.join("ECI.INI")).unwrap(),
             original
         );
+
+        drop(prepared);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preparation_reanchors_paths_already_modified_by_the_python_preflight() {
+        let root = std::env::temp_dir().join(format!(
+            "eloquence-assets-reanchor-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let data = root.join("new-data");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(source.join("ECI.DLL"), b"not a real dll").unwrap();
+        fs::write(
+            source.join("ECI.INI"),
+            "[1.0]\r\nPath=C:\\old-install\\enu.syn\r\nPath_Rom=C:\\old-install\\jpnrom.dll\r\n",
+        )
+        .unwrap();
+
+        let prepared = PreparedEci::create(&source.join("ECI.DLL"), &data).unwrap();
+        let patched = fs::read_to_string(prepared.dll_path().with_file_name("ECI.INI")).unwrap();
+        let expected_root = short_path(&data).display().to_string();
+        assert!(patched.contains(&format!("Path={expected_root}\\enu.syn")));
+        assert!(patched.contains(&format!("Path_Rom={expected_root}\\jpnrom.dll")));
 
         drop(prepared);
         let _ = fs::remove_dir_all(root);
