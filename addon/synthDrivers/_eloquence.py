@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from . import _eloquence_ipc as _ipc
+from ._eloquence_native import NativeHostConnection
 
 import config
 import nvwave
@@ -24,6 +25,7 @@ LOGGER = logging.getLogger(__name__)
 
 HOST_EXECUTABLE = "eloquence_host32.exe"
 HOST_SCRIPT = "host_eloquence32.py"
+NATIVE_HOST_EXECUTABLE = "eloquence_host32_native.exe"
 AUTH_KEY_BYTES = 16
 
 
@@ -164,7 +166,7 @@ AudioChunk = Tuple[bytes, Optional[int], bool, int]
 class HostProcess:
 	process: subprocess.Popen
 	connection: Any
-	listener: socket.socket
+	listener: Optional[socket.socket]
 
 
 class EloquenceHostClient:
@@ -183,12 +185,27 @@ class EloquenceHostClient:
 		self._sequence = 0
 		self._current_seq = 0
 		self._speaking = False
+		self._using_native = False
+		self._force_python = False
 
 	# ------------------------------------------------------------------
 	def ensure_started(self) -> None:
 		if self._host:
 			return
 		addon_dir = os.path.abspath(os.path.dirname(__file__))
+		if self._native_host_requested() and not self._force_python:
+			try:
+				self._host = self._start_native_host(addon_dir)
+				self._using_native = True
+			except Exception:
+				LOGGER.exception("Native Eloquence host failed to start; falling back to Python host")
+		if not self._host:
+			self._host = self._start_python_host(addon_dir)
+			self._using_native = False
+		self._receiver = threading.Thread(target=self._receiver_loop, daemon=True)
+		self._receiver.start()
+
+	def _start_python_host(self, addon_dir: str) -> HostProcess:
 		authkey = os.urandom(AUTH_KEY_BYTES)
 		listener = _ipc.create_listener()
 		port = listener.getsockname()[1]
@@ -225,9 +242,58 @@ class EloquenceHostClient:
 			except Exception:
 				pass
 			raise RuntimeError(f"Eloquence host process failed to start: {exc}") from exc
-		self._host = HostProcess(process=proc, connection=conn, listener=listener)
-		self._receiver = threading.Thread(target=self._receiver_loop, daemon=True)
-		self._receiver.start()
+		return HostProcess(process=proc, connection=conn, listener=listener)
+
+	def _start_native_host(self, addon_dir: str) -> HostProcess:
+		authkey = os.urandom(AUTH_KEY_BYTES)
+		cmd = list(self._resolve_native_host_executable(addon_dir))
+		cmd.extend(["--auth-key", authkey.hex()])
+		LOGGER.info("Launching native Eloquence host: %s", cmd)
+		proc = subprocess.Popen(
+			cmd,
+			cwd=addon_dir,
+			stdin=subprocess.PIPE,
+			stdout=subprocess.PIPE,
+			stderr=subprocess.DEVNULL,
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+		)
+		if proc.stdin is None or proc.stdout is None:
+			self._terminate_process(proc)
+			raise RuntimeError("native Eloquence host pipes were not created")
+
+		result: "queue.Queue[object]" = queue.Queue(maxsize=1)
+
+		def _handshake() -> None:
+			try:
+				result.put(NativeHostConnection(proc.stdout, proc.stdin, authkey))
+			except BaseException as error:
+				result.put(error)
+
+		threading.Thread(target=_handshake, name="EloquenceNativeHandshake", daemon=True).start()
+		try:
+			connection = result.get(timeout=5.0)
+		except queue.Empty as exc:
+			self._terminate_process(proc)
+			raise RuntimeError("native Eloquence host handshake timed out") from exc
+		if isinstance(connection, BaseException):
+			self._terminate_process(proc)
+			raise RuntimeError(f"native Eloquence host handshake failed: {connection}") from connection
+		return HostProcess(process=proc, connection=connection, listener=None)
+
+	@staticmethod
+	def _terminate_process(process: subprocess.Popen) -> None:
+		try:
+			process.terminate()
+			process.wait(timeout=2)
+		except Exception:
+			try:
+				process.kill()
+			except Exception:
+				pass
+
+	@staticmethod
+	def _native_host_requested() -> bool:
+		return os.environ.get("ELOQUENCE_NATIVE_HOST", "").strip().lower() in {"1", "true", "yes", "on"}
 
 	def _resolve_host_executable(self, addon_dir: str) -> Sequence[str]:
 		override = os.environ.get("ELOQUENCE_HOST_COMMAND")
@@ -244,6 +310,18 @@ class EloquenceHostClient:
 				" variable when developing the add-on."
 			)
 		raise RuntimeError("Eloquence helper resources missing from add-on package")
+
+	def _resolve_native_host_executable(self, addon_dir: str) -> Sequence[str]:
+		override = os.environ.get("ELOQUENCE_NATIVE_HOST_COMMAND")
+		if override:
+			return shlex.split(override)
+		exe_path = os.path.join(addon_dir, NATIVE_HOST_EXECUTABLE)
+		if os.path.exists(exe_path):
+			return [exe_path]
+		raise RuntimeError(
+			"Native Eloquence helper executable was not found."
+			" Set ELOQUENCE_NATIVE_HOST_COMMAND when developing the add-on."
+		)
 
 	# ------------------------------------------------------------------
 	def initialize_audio(self) -> None:
@@ -353,6 +431,7 @@ class EloquenceHostClient:
 	def send_command(self, command: str, wait: bool = True, **payload: Any) -> Dict[str, Any]:
 		if not self._host:
 			raise RuntimeError("Host not started")
+		event = None
 		with self._command_lock:
 			msg_id = next(self._id_counter)
 			event = threading.Event() if wait else None
@@ -377,19 +456,19 @@ class EloquenceHostClient:
 					self._pending.pop(msg_id, None)
 				raise
 
-			# If we are not going to wait for the response (e.g. stop command), return blank immediately
-			if not wait:
-				return {}
-
-			# Wait for response with timeout to avoid infinite blocking
-			if not event.wait(timeout=5.0):
-				self._pending.pop(msg_id, None)
-				LOGGER.error("Command %s timed out after 5 seconds", command)
-				raise RuntimeError(f"Command {command} timed out")
-			response = self._responses.pop(msg_id, {"error": "no response received"})
-			if "error" in response:
-				raise RuntimeError(response["error"])
-			return response.get("payload", {})
+		# Waiting must not hold the write lock: Stop is sent from NVDA's control
+		# thread while Synthesize is waiting on the worker thread.
+		if not wait:
+			return {}
+		assert event is not None
+		if not event.wait(timeout=5.0):
+			self._pending.pop(msg_id, None)
+			LOGGER.error("Command %s timed out after 5 seconds", command)
+			raise RuntimeError(f"Command {command} timed out")
+		response = self._responses.pop(msg_id, {"error": "no response received"})
+		if "error" in response:
+			raise RuntimeError(response["error"])
+		return response.get("payload", {})
 
 	# ------------------------------------------------------------------
 	def shutdown(self) -> None:
@@ -417,10 +496,11 @@ class EloquenceHostClient:
 			self._host.connection.close()
 		except Exception:
 			pass
-		try:
-			self._host.listener.close()
-		except Exception:
-			pass
+		if self._host.listener:
+			try:
+				self._host.listener.close()
+			except Exception:
+				pass
 		try:
 			self._host.process.terminate()
 			self._host.process.wait(timeout=2)
@@ -431,6 +511,7 @@ class EloquenceHostClient:
 			except Exception:
 				pass
 		self._host = None
+		self._using_native = False
 
 
 _client = EloquenceHostClient()
@@ -618,11 +699,22 @@ def initialize(indexCallback=None):
 		"eciPath": eci_path,
 		"dataDirectory": os.path.join(os.path.dirname(eci_path)),
 		"language": _current_lang,
+		"languageId": langs.get(_current_lang, langs["enu"])[0],
 		"enableAbbreviationDict": config.conf.get("speech", {}).get("eci", {}).get("ABRDICT", False),
 		"enablePhrasePrediction": config.conf.get("speech", {}).get("eci", {}).get("phrasePrediction", False),
 		"voiceVariant": int(voice_conf.get("variant", 0) or 0),
 	}
-	response = _client.send_command("initialize", **payload)
+	try:
+		response = _client.send_command("initialize", **payload)
+	except Exception:
+		if not _client._using_native:
+			raise
+		LOGGER.exception("Native Eloquence initialization failed; restarting with Python host")
+		_client.shutdown()
+		_client._force_python = True
+		_client.ensure_started()
+		_client.initialize_audio()
+		response = _client.send_command("initialize", **payload)
 	params.update(response.get("params", {}))
 	voice_params.update(response.get("voiceParams", {}))
 

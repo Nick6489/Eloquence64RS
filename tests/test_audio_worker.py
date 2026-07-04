@@ -1,8 +1,10 @@
 import importlib.util
 import queue
 import sys
+import threading
 import types
 import unittest
+from unittest.mock import Mock
 from pathlib import Path
 
 
@@ -71,6 +73,30 @@ class AudioWorkerTests(unittest.TestCase):
 		self.assertIsNotNone(player.marker_callback)
 		player.marker_callback()
 		self.assertEqual(events[-1], ("index", 42))
+
+	def test_waiting_command_does_not_block_stop_write(self):
+		module = _load_client_module()
+		client = module.EloquenceHostClient()
+		connection = Mock()
+		client._host = module.HostProcess(process=Mock(), connection=connection, listener=None)
+		waiting_started = threading.Event()
+
+		def wait_for_response():
+			waiting_started.set()
+			with self.assertRaises(RuntimeError):
+				client.send_command("synthesize")
+
+		thread = threading.Thread(target=wait_for_response)
+		thread.start()
+		self.assertTrue(waiting_started.wait(timeout=1))
+		while len(client._pending) == 0:
+			pass
+		client.send_command("stop", wait=False)
+		self.assertEqual(connection.send.call_count, 2)
+		for event in client._pending.values():
+			event.set()
+		thread.join(timeout=1)
+		self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":

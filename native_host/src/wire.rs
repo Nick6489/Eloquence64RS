@@ -77,6 +77,10 @@ pub fn response(request_id: u32) -> Frame {
     Frame::new(MessageKind::Response, request_id, Vec::new())
 }
 
+pub fn response_with_payload(request_id: u32, payload: Vec<u8>) -> Frame {
+    Frame::new(MessageKind::Response, request_id, payload)
+}
+
 pub fn error_response(request_id: u32, message: &str) -> Result<Frame, ProtocolError> {
     let mut payload = PayloadWriter::new();
     payload.put_string(message)?;

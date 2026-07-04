@@ -98,23 +98,27 @@ impl Runtime {
         })
     }
 
-    fn execute(&mut self, command: ClientCommand) -> Result<(), String> {
+    fn execute(&mut self, command: ClientCommand) -> Result<Vec<u8>, String> {
         match command {
             ClientCommand::BeginGeneration(generation) => {
                 self.engine.begin_generation(generation);
-                Ok(())
+                Ok(Vec::new())
             }
             ClientCommand::AddText(text) => self
                 .engine
                 .add_text(&text)
+                .map(|()| Vec::new())
                 .map_err(|error| error.to_string()),
             ClientCommand::InsertIndex(index) => self
                 .engine
                 .insert_index(index)
+                .map(|()| Vec::new())
                 .map_err(|error| error.to_string()),
-            ClientCommand::Synthesize => {
-                self.engine.synthesize().map_err(|error| error.to_string())
-            }
+            ClientCommand::Synthesize => self
+                .engine
+                .synthesize()
+                .map(|()| Vec::new())
+                .map_err(|error| error.to_string()),
             ClientCommand::SetParam { parameter, value } => {
                 self.engine.set_param(parameter, value);
                 if parameter == ECI_LANGUAGE_DIALECT {
@@ -123,18 +127,33 @@ impl Runtime {
                         .load_dictionaries(&self.language_code, &self.data_directory)
                         .map_err(|error| error.to_string())?;
                 }
-                Ok(())
+                Ok(self.state_payload())
             }
             ClientCommand::SetVoiceParam { parameter, value } => {
                 self.engine.set_voice_param(parameter, value);
-                Ok(())
+                Ok(self.state_payload())
             }
             ClientCommand::CopyVoice(variant) => {
                 self.engine.copy_voice(variant);
-                Ok(())
+                Ok(self.state_payload())
             }
             _ => Err("command is not valid on the engine worker".to_owned()),
         }
+    }
+
+    fn state_payload(&self) -> Vec<u8> {
+        let mut payload = crate::protocol::PayloadWriter::new();
+        payload.put_u32(2);
+        for parameter in [ECI_INPUT_TYPE, ECI_LANGUAGE_DIALECT] {
+            payload.put_i32(parameter);
+            payload.put_i32(self.engine.get_param(parameter));
+        }
+        payload.put_u32(7);
+        for parameter in 1..=7 {
+            payload.put_i32(parameter);
+            payload.put_i32(self.engine.get_voice_param(parameter));
+        }
+        payload.finish()
     }
 }
 
@@ -262,14 +281,16 @@ fn engine_worker(
     let mut runtime: Option<Runtime> = None;
 
     while let Ok(item) = work.recv() {
-        let result = match item.command {
+        let result: Result<Vec<u8>, String> = match item.command {
             ClientCommand::Initialize(config) if runtime.is_none() => {
                 Runtime::initialize(config, event_tx.clone()).map(|created| {
+                    let state = created.state_payload();
                     *shared_stop
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                         Some(created.engine.stop_controller());
                     runtime = Some(created);
+                    state
                 })
             }
             ClientCommand::Initialize(_) => Err("engine is already initialized".to_owned()),
@@ -283,7 +304,10 @@ fn engine_worker(
                 .and_then(|runtime| runtime.execute(command)),
         };
         match result {
-            Ok(()) => send_frame(&outbound, wire::response(item.request_id)),
+            Ok(payload) => send_frame(
+                &outbound,
+                wire::response_with_payload(item.request_id, payload),
+            ),
             Err(error) => send_error(&outbound, item.request_id, &error),
         }
     }

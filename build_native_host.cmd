@@ -1,0 +1,12 @@
+@echo off
+setlocal
+set "here=%~dp0"
+cd /d "%here%"
+
+cargo build --release --target i686-pc-windows-msvc --manifest-path native_host\Cargo.toml
+if errorlevel 1 exit /b %errorlevel%
+
+copy /Y "native_host\target\i686-pc-windows-msvc\release\eloquence_host32_native.exe" "addon\synthDrivers\eloquence_host32_native.exe"
+if errorlevel 1 exit /b %errorlevel%
+
+echo Built addon\synthDrivers\eloquence_host32_native.exe

@@ -189,6 +189,7 @@ mod tests {
         assert!(matches!(result, Err(EciLoadError::SymbolNotFound { .. })));
     }
 
+    #[cfg(target_pointer_width = "32")]
     #[test]
     fn local_eci_dll_resolves_required_exports_when_available() {
         let Some(path) = std::env::var_os("ELOQUENCE_ECI_PATH") else {

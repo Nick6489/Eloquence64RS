@@ -112,3 +112,11 @@ Tooling dependencies are pinned in `pyproject.toml` and `uv.lock`, following
 NVDA's current dependency-group pattern. The Eloquence Host Process build uses a
 separate `.venv32` environment so PyInstaller can run under 32-bit Python
 without replacing the normal development `.venv`.
+
+### Experimental native host
+
+The Rust host is opt-in while parity testing is in progress. Install the
+`i686-pc-windows-msvc` Rust target, run `build_native_host.cmd`, package the
+add-on normally, and set `ELOQUENCE_NATIVE_HOST=1` before starting NVDA. If the
+native executable cannot start or initialize Eloquence, the add-on logs the
+failure and automatically starts the existing Python host instead.
