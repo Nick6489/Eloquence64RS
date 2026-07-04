@@ -34,8 +34,9 @@ The native host will be a single-client process with these boundaries:
 2. The Rust host owns the Eloquence Engine handle, Pronunciation Dictionary handles, output buffer,
    ECI callback, pending Speech Indexes, synthesis lifecycle, and completion recovery.
 3. A versioned binary Host Channel replaces Pickle for the native-host path.
-4. Control responses and ordered engine events initially use the same framed byte stream. Eloquence
-   produces roughly 22 KiB/s of PCM, so shared memory is deferred until benchmarks demonstrate value.
+4. Control commands use the child process's inherited stdin pipe; responses and ordered engine events
+   use its stdout pipe. Eloquence produces roughly 22 KiB/s of PCM, so shared memory is deferred until
+   benchmarks demonstrate value.
 5. `eciSynthesize` and `eciSynchronize` run on a synthesis thread. The control path remains able to
    request `eciStop` while synchronization is in progress.
 
@@ -81,9 +82,10 @@ and stopped events repeat that identifier so stale events can be discarded after
 ## Lifecycle and security
 
 - One host is launched for one NVDA process; no global singleton is required.
-- Pipe names are unique per launch and are passed explicitly to the host.
-- The Host Channel is authenticated with a random per-launch key and Windows objects receive restrictive
-  security descriptors before the native host becomes the default.
+- Anonymous stdin/stdout pipes are inherited directly from the NVDA parent process; the host publishes
+  no global pipe name or listening socket.
+- The Host Channel is authenticated with a random per-launch key as a defense against accidental handle
+  misuse.
 - The host waits on a real parent-process handle rather than polling a PID, avoiding PID-reuse races.
 - Engine, dictionary, mapping, event, and process handles have deterministic cleanup paths.
 

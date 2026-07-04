@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fmt;
+use std::io::{self, Read, Write};
 
 pub const MAGIC: [u8; 4] = *b"ELQH";
 pub const VERSION: u16 = 1;
@@ -126,6 +127,41 @@ impl Frame {
             payload: encoded[HEADER_LEN..].to_vec(),
         })
     }
+
+    /// Reads one frame, treating clean EOF before a header as normal shutdown.
+    pub fn read_from(reader: &mut impl Read) -> Result<Option<Self>, ProtocolError> {
+        let mut header = [0_u8; HEADER_LEN];
+        let mut read = 0;
+        while read < header.len() {
+            match reader.read(&mut header[read..]) {
+                Ok(0) if read == 0 => return Ok(None),
+                Ok(0) => return Err(ProtocolError::TruncatedHeader(read)),
+                Ok(count) => read += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(ProtocolError::Io(error.kind())),
+            }
+        }
+        let payload_len = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
+        if payload_len > MAX_PAYLOAD_LEN {
+            return Err(ProtocolError::PayloadTooLarge(payload_len));
+        }
+        let mut encoded = Vec::with_capacity(HEADER_LEN + payload_len);
+        encoded.extend_from_slice(&header);
+        encoded.resize(HEADER_LEN + payload_len, 0);
+        reader
+            .read_exact(&mut encoded[HEADER_LEN..])
+            .map_err(|error| ProtocolError::Io(error.kind()))?;
+        Self::decode(&encoded).map(Some)
+    }
+
+    pub fn write_to(&self, writer: &mut impl Write) -> Result<(), ProtocolError> {
+        writer
+            .write_all(&self.encode()?)
+            .map_err(|error| ProtocolError::Io(error.kind()))?;
+        writer
+            .flush()
+            .map_err(|error| ProtocolError::Io(error.kind()))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,6 +174,10 @@ pub enum ProtocolError {
     PayloadLengthMismatch { declared: usize, actual: usize },
     TruncatedPayload,
     InvalidUtf8,
+    InvalidAuthenticationKeyLength(usize),
+    UnexpectedMessageKind(u16),
+    TrailingPayload(usize),
+    Io(io::ErrorKind),
 }
 
 impl fmt::Display for ProtocolError {
@@ -164,6 +204,16 @@ impl fmt::Display for ProtocolError {
             }
             Self::TruncatedPayload => write!(formatter, "truncated typed payload"),
             Self::InvalidUtf8 => write!(formatter, "invalid UTF-8 protocol string"),
+            Self::InvalidAuthenticationKeyLength(length) => {
+                write!(formatter, "authentication key has invalid length: {length}")
+            }
+            Self::UnexpectedMessageKind(kind) => {
+                write!(formatter, "unexpected client message kind: {kind:#06x}")
+            }
+            Self::TrailingPayload(length) => {
+                write!(formatter, "typed payload has {length} trailing bytes")
+            }
+            Self::Io(kind) => write!(formatter, "protocol stream I/O error: {kind:?}"),
         }
     }
 }
@@ -259,6 +309,14 @@ impl<'a> PayloadReader<'a> {
     pub fn is_empty(&self) -> bool {
         self.remaining.is_empty()
     }
+
+    pub fn finish(self) -> Result<(), ProtocolError> {
+        if self.remaining.is_empty() {
+            Ok(())
+        } else {
+            Err(ProtocolError::TrailingPayload(self.remaining.len()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -316,5 +374,28 @@ mod tests {
         assert_eq!(reader.get_string().unwrap(), "enu");
         assert_eq!(reader.get_bytes().unwrap(), &[0x97, 0x00, 0xff]);
         assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn stream_round_trip_handles_back_to_back_frames() {
+        let first = Frame::new(MessageKind::BeginGeneration, 10, vec![1, 2]);
+        let second = Frame::new(MessageKind::Done, 0, vec![3]);
+        let mut stream = Vec::new();
+        first.write_to(&mut stream).unwrap();
+        second.write_to(&mut stream).unwrap();
+
+        let mut input = stream.as_slice();
+        assert_eq!(Frame::read_from(&mut input).unwrap(), Some(first));
+        assert_eq!(Frame::read_from(&mut input).unwrap(), Some(second));
+        assert_eq!(Frame::read_from(&mut input).unwrap(), None);
+    }
+
+    #[test]
+    fn stream_rejects_partial_header_at_eof() {
+        let mut input = &MAGIC[..];
+        assert_eq!(
+            Frame::read_from(&mut input),
+            Err(ProtocolError::TruncatedHeader(4))
+        );
     }
 }

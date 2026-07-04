@@ -1,13 +1,17 @@
 //! Safe ownership and callback handling around the dynamically loaded ECI API.
 
-use crate::eci::{EciApi, EciCallbackReturn, EciHandle, EciStop};
+use crate::assets::system_ansi_path;
+use crate::dictionaries;
+use crate::eci::{EciApi, EciCallbackReturn, EciDictionaryHandle, EciHandle, EciStop};
 use crate::progress::{ProgressEvent, ProgressTracker, FINAL_INDEX};
+use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::c_void;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
 const WAVEFORM_BUFFER_MESSAGE: u32 = 0;
@@ -45,6 +49,11 @@ pub enum EngineError {
     SynthesizeFailed,
     SynchronizeFailed,
     StopFailed,
+    EventQueueUnavailable,
+    CreateDictionaryFailed,
+    DictionaryPathEncodingFailed { path: String, windows_error: u32 },
+    LoadDictionaryFailed { path: String, error: i32 },
+    SetDictionaryFailed(i32),
 }
 
 impl fmt::Display for EngineError {
@@ -59,6 +68,23 @@ impl fmt::Display for EngineError {
             Self::SynthesizeFailed => write!(formatter, "eciSynthesize failed"),
             Self::SynchronizeFailed => write!(formatter, "eciSynchronize failed"),
             Self::StopFailed => write!(formatter, "eciStop failed"),
+            Self::EventQueueUnavailable => {
+                write!(formatter, "engine event queue is full or closed")
+            }
+            Self::CreateDictionaryFailed => write!(formatter, "eciNewDict failed"),
+            Self::DictionaryPathEncodingFailed {
+                path,
+                windows_error,
+            } => write!(
+                formatter,
+                "dictionary path cannot be encoded for ECI ({windows_error}): {path}"
+            ),
+            Self::LoadDictionaryFailed { path, error } => {
+                write!(formatter, "eciLoadDict failed with {error}: {path}")
+            }
+            Self::SetDictionaryFailed(error) => {
+                write!(formatter, "eciSetDict failed with {error}")
+            }
         }
     }
 }
@@ -68,12 +94,12 @@ impl Error for EngineError {}
 struct CallbackContext {
     output_buffer: Box<[i16]>,
     progress: Mutex<ProgressTracker>,
-    events: Sender<EngineEvent>,
+    events: SyncSender<EngineEvent>,
     cancellation_requested: Arc<AtomicBool>,
 }
 
 impl CallbackContext {
-    fn send_progress(&self, event: ProgressEvent) {
+    fn send_progress(&self, event: ProgressEvent) -> bool {
         let event = match event {
             ProgressEvent::Index {
                 generation,
@@ -87,18 +113,16 @@ impl CallbackContext {
             ProgressEvent::Done { generation } => EngineEvent::Done { generation },
             ProgressEvent::Stopped { generation } => EngineEvent::Stopped { generation },
         };
-        let _ = self.events.send(event);
+        self.events.try_send(event).is_ok()
     }
 
-    fn complete(&self) {
+    fn complete(&self) -> bool {
         let events = self
             .progress
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .complete();
-        for event in events {
-            self.send_progress(event);
-        }
+        events.into_iter().all(|event| self.send_progress(event))
     }
 }
 
@@ -140,8 +164,7 @@ pub struct StopController {
 
 impl StopController {
     /// Requests cancellation from a control thread while `eciSynchronize` is
-    /// blocked on the synthesis thread. Returns false if teardown has started
-    /// or ECI rejected the stop request.
+    /// blocked on the synthesis thread. Returns false if teardown has started.
     pub fn request_stop(&self) -> bool {
         self.state
             .cancellation_requested
@@ -154,19 +177,22 @@ impl StopController {
         if handle == 0 {
             return false;
         }
-        unsafe { (self.stop_function)(handle as EciHandle) != 0 }
+        unsafe {
+            (self.stop_function)(handle as EciHandle);
+        }
+        true
     }
 }
 
 fn handle_audio_callback(context: &CallbackContext, sample_count: i32) -> EciCallbackReturn {
     let Ok(sample_count) = usize::try_from(sample_count) else {
-        let _ = context.events.send(EngineEvent::CallbackError(
+        let _ = context.events.try_send(EngineEvent::CallbackError(
             "ECI returned a negative sample count".to_owned(),
         ));
         return EciCallbackReturn::Abort;
     };
     if sample_count > context.output_buffer.len() {
-        let _ = context.events.send(EngineEvent::CallbackError(format!(
+        let _ = context.events.try_send(EngineEvent::CallbackError(format!(
             "ECI returned {sample_count} samples for a {}-sample buffer",
             context.output_buffer.len()
         )));
@@ -182,7 +208,7 @@ fn handle_audio_callback(context: &CallbackContext, sample_count: i32) -> EciCal
         let samples = context.output_buffer[..sample_count].to_vec();
         if context
             .events
-            .send(EngineEvent::Audio {
+            .try_send(EngineEvent::Audio {
                 generation,
                 samples,
             })
@@ -197,7 +223,9 @@ fn handle_audio_callback(context: &CallbackContext, sample_count: i32) -> EciCal
 fn handle_index_callback(context: &CallbackContext, index: i32) -> EciCallbackReturn {
     let index = index as u32;
     if index == FINAL_INDEX {
-        context.complete();
+        if !context.complete() {
+            return EciCallbackReturn::Abort;
+        }
     } else {
         let event = context
             .progress
@@ -205,7 +233,9 @@ fn handle_index_callback(context: &CallbackContext, index: i32) -> EciCallbackRe
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .engine_index(index);
         if let Some(event) = event {
-            context.send_progress(event);
+            if !context.send_progress(event) {
+                return EciCallbackReturn::Abort;
+            }
         }
     }
     EciCallbackReturn::Processed
@@ -218,13 +248,14 @@ pub struct EciEngine {
     handle: EciHandle,
     callback_context: Box<CallbackContext>,
     stop_state: Arc<StopState>,
+    dictionary_handles: HashMap<String, EciDictionaryHandle>,
 }
 
 impl EciEngine {
     pub fn new(
         api: EciApi,
         language_id: i32,
-        events: Sender<EngineEvent>,
+        events: SyncSender<EngineEvent>,
     ) -> Result<Self, EngineError> {
         let handle = unsafe { (api.new_ex)(language_id) };
         if handle.is_null() {
@@ -265,6 +296,7 @@ impl EciEngine {
             handle,
             callback_context,
             stop_state,
+            dictionary_handles: HashMap::new(),
         })
     }
 
@@ -324,11 +356,15 @@ impl EciEngine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .stop();
             if let Some(event) = event {
-                self.callback_context.send_progress(event);
+                if !self.callback_context.send_progress(event) {
+                    return Err(EngineError::EventQueueUnavailable);
+                }
             }
             return Ok(());
         }
-        self.callback_context.complete();
+        if !self.callback_context.complete() {
+            return Err(EngineError::EventQueueUnavailable);
+        }
         if !synthesized {
             return Err(EngineError::SynthesizeFailed);
         }
@@ -372,6 +408,78 @@ impl EciEngine {
         unsafe { (self.api.copy_voice)(self.handle, variant, 0) }
     }
 
+    pub fn load_dictionaries(
+        &mut self,
+        language_code: &str,
+        data_directory: &Path,
+    ) -> Result<(), EngineError> {
+        let language_code = language_code.to_ascii_lowercase();
+        if let Some(&dictionary) = self.dictionary_handles.get(&language_code) {
+            return self.set_dictionary(dictionary);
+        }
+
+        let dictionary = unsafe { (self.api.new_dictionary)(self.handle) };
+        if dictionary.is_null() {
+            return Err(EngineError::CreateDictionaryFailed);
+        }
+        let result = self.populate_dictionary(dictionary, &language_code, data_directory);
+        if let Err(error) = result {
+            unsafe {
+                (self.api.delete_dictionary)(self.handle, dictionary);
+            }
+            return Err(error);
+        }
+        self.set_dictionary(dictionary)?;
+        self.dictionary_handles.insert(language_code, dictionary);
+        Ok(())
+    }
+
+    fn populate_dictionary(
+        &self,
+        dictionary: EciDictionaryHandle,
+        language_code: &str,
+        data_directory: &Path,
+    ) -> Result<(), EngineError> {
+        for (volume, candidates) in dictionaries::candidates(language_code).iter().enumerate() {
+            let Some(path) = candidates
+                .iter()
+                .map(|name| data_directory.join(name))
+                .find(|path| path.is_file())
+            else {
+                continue;
+            };
+            let encoded = system_ansi_path(&path).map_err(|windows_error| {
+                EngineError::DictionaryPathEncodingFailed {
+                    path: path.display().to_string(),
+                    windows_error,
+                }
+            })?;
+            let result = unsafe {
+                (self.api.load_dictionary)(
+                    self.handle,
+                    dictionary,
+                    volume as i32,
+                    encoded.as_ptr().cast(),
+                )
+            };
+            if result != 0 {
+                return Err(EngineError::LoadDictionaryFailed {
+                    path: path.display().to_string(),
+                    error: result,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn set_dictionary(&self, dictionary: EciDictionaryHandle) -> Result<(), EngineError> {
+        let result = unsafe { (self.api.set_dictionary)(self.handle, dictionary) };
+        if result != 0 {
+            return Err(EngineError::SetDictionaryFailed(result));
+        }
+        Ok(())
+    }
+
     fn require_active_generation(&self) -> Result<u64, EngineError> {
         self.callback_context
             .progress
@@ -392,6 +500,9 @@ impl Drop for EciEngine {
         *published_handle = 0;
         unsafe {
             (self.api.register_callback)(self.handle, None, std::ptr::null_mut());
+            for (_, dictionary) in self.dictionary_handles.drain() {
+                (self.api.delete_dictionary)(self.handle, dictionary);
+            }
             (self.api.delete)(self.handle);
         }
         self.handle = std::ptr::null_mut();
@@ -412,7 +523,7 @@ mod tests {
     use std::sync::mpsc;
 
     fn context() -> (Box<CallbackContext>, mpsc::Receiver<EngineEvent>) {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(64);
         let context = Box::new(CallbackContext {
             output_buffer: vec![1, -2, 3, -4].into_boxed_slice(),
             progress: Mutex::new(ProgressTracker::default()),
@@ -462,7 +573,7 @@ mod tests {
             handle_index_callback(&context, FINAL_INDEX as i32),
             EciCallbackReturn::Processed
         );
-        context.complete();
+        assert!(context.complete());
 
         assert_eq!(
             receiver.try_iter().collect::<Vec<_>>(),
@@ -506,7 +617,7 @@ mod tests {
         };
         let test_dll = prepare_test_eci(Path::new(&source_dll));
         let api = EciApi::load(OsStr::new(&test_dll)).unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(64);
         {
             let engine = EciEngine::new(api, 65_536, sender).unwrap();
             engine.set_param(1, 1); // annotated input
