@@ -12,8 +12,8 @@ log = logging.getLogger(__name__)
 
 
 class EloquenceUpdateManager:
-	REPO_OWNER = "fastfinge"
-	REPO_NAME = "eloquence_64"
+	REPO_OWNER = "Nick6489"
+	REPO_NAME = "Eloquence64RS"
 
 	def __init__(self, addon_dir):
 		self.addon_dir = os.path.abspath(addon_dir)
@@ -39,12 +39,26 @@ class EloquenceUpdateManager:
 		Checks GitHub for the latest release.
 		Returns (has_update, latest_version, download_url, changelog)
 		"""
-		api_url = f"https://api.github.com/repos/{self.REPO_OWNER}/{self.REPO_NAME}/releases/latest"
+		api_url = f"https://api.github.com/repos/{self.REPO_OWNER}/{self.REPO_NAME}/releases?per_page=20"
 		try:
 			headers = {"User-Agent": "NVDA-Eloquence-Updater"}
 			req = urllib.request.Request(api_url, headers=headers)
 			with urllib.request.urlopen(req) as response:
-				data = json.loads(response.read().decode())
+				releases = json.loads(response.read().decode())
+
+			# GitHub's /releases/latest endpoint excludes prereleases. RC builds should
+			# therefore follow newer RCs, while stable builds should remain on stable releases.
+			allow_prerelease = "rc" in self.CURRENT_VERSION.lower()
+			data = next(
+				(
+					release
+					for release in releases
+					if not release.get("draft") and (allow_prerelease or not release.get("prerelease"))
+				),
+				None,
+			)
+			if data is None:
+				raise RuntimeError(_("No applicable Eloquence64RS release was found."))
 
 			latest_version = data.get("tag_name", "0.0.0").lstrip("v")
 			download_url = None
@@ -69,12 +83,24 @@ class EloquenceUpdateManager:
 			raise
 
 	def _is_newer(self, latest, current):
-		# Simple version comparison
-		# Handles date-based versions like 0.20250420.01
+		# Eloquence64RS versions use tags such as v19.0-RS-RC2 and v19.0-RS.
+		# A final release is newer than its release candidates.
+		def parse_rs_version(v):
+			match = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:-RS)?(?:-RC(\d+))?", v, re.IGNORECASE)
+			if not match:
+				return None
+			base = tuple(int(part) for part in match.group(1).split("."))
+			rc = match.group(2)
+			return base, (0, int(rc)) if rc is not None else (1, 0)
+
 		def parse_version(v):
 			return [int(x) for x in re.findall(r"\d+", v)]
 
 		try:
+			latest_rs = parse_rs_version(latest)
+			current_rs = parse_rs_version(current)
+			if latest_rs is not None and current_rs is not None:
+				return latest_rs > current_rs
 			return parse_version(latest) > parse_version(current)
 		except Exception:
 			return latest != current
