@@ -41,12 +41,9 @@ def _load_client_module():
 class FakePlayer:
 	def __init__(self, events):
 		self.events = events
-		self.marker_callback = None
 
 	def feed(self, data, onDone=None):
 		self.events.append(("feed", data))
-		if onDone:
-			self.marker_callback = onDone
 
 
 class FakeClient:
@@ -54,7 +51,9 @@ class FakeClient:
 
 
 class AudioWorkerTests(unittest.TestCase):
-	def test_empty_index_marker_queues_non_blocking_playback_callback(self):
+	def test_empty_index_chunk_fires_callback_without_feeding_player(self):
+		# Index-only chunks must never reach WavePlayer.feed: degenerate
+		# tiny buffers can cause audible clicks on some devices (see #127).
 		module = _load_client_module()
 		events = []
 		module.onIndexReached = lambda index: events.append(("index", index))
@@ -67,10 +66,7 @@ class AudioWorkerTests(unittest.TestCase):
 
 		worker.run()
 
-		self.assertEqual(events, [("feed", b"audio"), ("feed", b"\x00\x00")])
-		self.assertIsNotNone(player.marker_callback)
-		player.marker_callback()
-		self.assertEqual(events[-1], ("index", 42))
+		self.assertEqual(events, [("feed", b"audio"), ("index", 42)])
 
 
 if __name__ == "__main__":

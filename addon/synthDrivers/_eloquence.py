@@ -32,10 +32,6 @@ class AudioWorker(threading.Thread):
 	_CHANNELS = 1
 	_BITS_PER_SAMPLE = 16
 	_SAMPLE_RATE = 11025
-	# One silent 16-bit mono sample.  Queueing this with an onDone callback
-	# places an index precisely after preceding audio without blocking the
-	# worker and starving WavePlayer's buffer.
-	_INDEX_MARKER_AUDIO = b"\x00\x00"
 
 	def __init__(
 		self,
@@ -68,10 +64,7 @@ class AudioWorker(threading.Thread):
 			if not data:
 				if not self._stopping:
 					if index is not None:
-						# The host emits indexes as separate zero-length chunks.
-						# Queue a silent sample so WavePlayer invokes the callback
-						# after preceding audio, while later audio can still be fed.
-						self._queue_index_marker(index)
+						self._invoke_index_callback(index)
 					if is_final:
 						self._schedule_idle()
 				self._queue.task_done()
@@ -132,18 +125,6 @@ class AudioWorker(threading.Thread):
 			LOGGER.exception("WavePlayer idle failed")
 		if not self._stopping:
 			self._invoke_index_callback(None)
-
-	def _queue_index_marker(self, index: int) -> None:
-		"""Queue a non-blocking playback marker for a Speech Index."""
-		try:
-			with self._player_lock:
-				if not self._stopping and self._player:
-					self._player.feed(
-						self._INDEX_MARKER_AUDIO,
-						onDone=lambda: self._invoke_index_callback(index),
-					)
-		except Exception:
-			LOGGER.exception("WavePlayer index marker feed failed")
 
 	def _invoke_index_callback(self, value: Optional[int]) -> None:
 		global lastindex
