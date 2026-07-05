@@ -15,6 +15,17 @@ The internal NVDA add-on ID remains `Eloquence` so an Eloquence64RS update
 replaces an earlier Eloquence64 installation instead of creating a conflicting
 side-by-side copy.
 
+## Important upgrade step for secure screens
+
+If you upgrade from Eloquence64, you **must copy the new host executable to
+NVDA's secure-screen configuration again**, even if you previously copied the
+old helper. The Eloquence64RS host protocol is deliberately incompatible with
+the earlier Eloquence64 host. Until the new executable is copied, Eloquence
+will fail to load on the logon screen, UAC prompts, and other secure screens.
+
+After installing and restarting NVDA, open **NVDA Settings > Eloquence** and
+choose **Copy Helper to System Config (for Logon Screen)**.
+
 All Eloquence64RS release versions contain the `RS` marker. Release candidates
 use versions such as `19.0-RS-RC1`; the corresponding stable release is
 `19.0-RS`.
@@ -57,8 +68,9 @@ Known limitations:
 
 ## Eloquence on secure screens
 
-NVDA does not copy executables to its secure-screen configuration. After using
-NVDA's **Use currently saved settings during sign-in** command:
+NVDA does not copy executables to its secure-screen configuration. An existing
+Eloquence64 helper is not compatible with Eloquence64RS and must be replaced.
+After using NVDA's **Use currently saved settings during sign-in** command:
 
 1. Open **NVDA Settings > Eloquence**.
 2. Choose **Copy Helper to System Config (for Logon Screen)**.
