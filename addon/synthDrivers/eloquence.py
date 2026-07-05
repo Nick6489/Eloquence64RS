@@ -796,7 +796,10 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			pass  # Never let a notice prevent the synth from working
 
 	def terminate(self):
-		_eloquence.close_audio()
+		# NVDA destroys the current driver before constructing the replacement.
+		# Release the native host as well as its WavePlayer so that switching back
+		# can create a fresh ECI engine immediately.
+		_eloquence.terminate()
 		# Safe settings panel removal - won't crash if it was never registered
 		try:
 			if hasattr(gui.settingsDialogs, "NVDASettingsDialog"):

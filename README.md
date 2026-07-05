@@ -1,6 +1,31 @@
-# Eloquence for NVDA
+# Eloquence64RS for NVDA
 
-Eloquence synthesizer add-on for 64-bit NVDA.
+Eloquence64RS is an Eloquence synthesizer add-on for 64-bit NVDA. It runs the
+legacy 32-bit Eloquence engine in a small Rust host process and streams speech
+back to NVDA.
+
+## Project status
+
+This is an unofficial, unsupported, community-maintained add-on, provided as
+is and used at your own risk. Release packages include legacy proprietary
+Eloquence binaries. Eloquence64RS replaces Eloquence64 and should not be
+installed alongside it or the IBMTTS add-on.
+
+The internal NVDA add-on ID remains `Eloquence` so an Eloquence64RS update
+replaces an earlier Eloquence64 installation instead of creating a conflicting
+side-by-side copy.
+
+All Eloquence64RS release versions contain the `RS` marker. Release candidates
+use versions such as `19.0-RS-RC1`; the corresponding stable release is
+`19.0-RS`.
+
+## Acknowledgements
+
+I am standing on the shoulders of giants here, taking logic from
+[Fastfinge/Eloquence64](https://github.com/fastfinge/eloquence_64) and using
+[davidacm/ibmtts-host32-bridge](https://github.com/davidacm/ibmtts-host32-bridge)
+as a parts bin to create a best-of-both-worlds Eloquence. Thanks to those
+project maintainers and contributors, without whom this would not exist.
 
 ## 64-bit support
 
@@ -79,5 +104,5 @@ does not alter host selection in the packaged add-on.
 If an upgrade leaves stale add-on files, disable Eloquence, restart NVDA, remove
 the old `Eloquence` and any `Eloquence.delete` directories under
 `%APPDATA%\nvda\addons`, then install the current package cleanly. Running the
-IBMTTS and Eloquence add-ons together is unsupported. See
+IBMTTS and Eloquence add-ons together is unsupported. See upstream
 [issue #101](https://github.com/fastfinge/eloquence_64/issues/101) for background.

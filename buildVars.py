@@ -7,8 +7,8 @@ import subprocess
 def _get_version():
 	"""Derive addon version from git tags.
 
-	- On exact tag: returns tag name (e.g. "v14")
-	- Between tags: returns describe output (e.g. "v13-2-gabcdef")
+	- On exact tag: returns tag name (e.g. "v19.0-RS")
+	- Between tags: returns describe output (e.g. "v19.0-RS-2-gabcdef")
 	- No git / no tags: returns "dev"
 	"""
 	try:
@@ -26,10 +26,10 @@ def _get_version():
 
 addon_info = {
 	"addon_name": "Eloquence",
-	"addon_summary": "Eloquence Synthesizer",
-	"addon_description": "Eloquence synthesizer for NVDA with 64-bit support",
+	"addon_summary": "Eloquence64RS Synthesizer",
+	"addon_description": "Community-maintained Eloquence synthesizer for 64-bit NVDA with a Rust host",
 	"addon_version": _get_version(),
-	"addon_author": "NVDA User",
-	"addon_url": "https://github.com/fastfinge/eloquence_64",
-	"addon_lastTestedNVDAVersion": "2034.1",
+	"addon_author": "Nick Giannak III and contributors",
+	"addon_url": "https://github.com/Nick6489/Eloquence64RS",
+	"addon_lastTestedNVDAVersion": "2026.1",
 }

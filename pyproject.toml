@@ -1,7 +1,7 @@
 [project]
-name = "eloquence-64"
+name = "eloquence64rs"
 version = "0.0.0"  # Not used — addon version comes from git tags via buildVars.py
-description = "Eloquence synthesizer for 64-bit NVDA"
+description = "Community-maintained Eloquence synthesizer for 64-bit NVDA with a Rust host"
 requires-python = ">=3.13,<3.14"
 dependencies = []
 

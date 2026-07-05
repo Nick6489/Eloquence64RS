@@ -84,6 +84,9 @@ class _SynthBase:
 	def _paramToPercent(self, value, min_value, max_value):
 		return int((value - min_value) * 100 / (max_value - min_value))
 
+	def terminate(self):
+		self.base_terminated = True
+
 
 class _SpeechQueue:
 	def __init__(self):
@@ -127,6 +130,7 @@ class _EloquenceStub(types.ModuleType):
 		self.stopped = False
 		self.processed = False
 		self.immediate_calls = []
+		self.terminated = False
 
 	def cmdProsody(self, *args):
 		self.immediate_calls.append(("cmdProsody", args))
@@ -152,6 +156,9 @@ class _EloquenceStub(types.ModuleType):
 
 	def getVParam(self, param):
 		return self.voice_params.get(param, 0)
+
+	def terminate(self):
+		self.terminated = True
 
 
 def _install_nvda_stubs():
@@ -249,6 +256,15 @@ def _queued_text(calls, eloquence_stub):
 
 
 class LanguageScopeTests(unittest.TestCase):
+	def test_driver_terminate_releases_native_host(self):
+		module, eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+
+		driver.terminate()
+
+		self.assertTrue(eloquence_stub.terminated)
+		self.assertTrue(driver.base_terminated)
+
 	def test_english_document_language_does_not_replace_default_voice(self):
 		module, eloquence_stub, preprocess_calls = _load_driver()
 		driver = _new_driver(module)
