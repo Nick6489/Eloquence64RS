@@ -24,6 +24,10 @@ class TextPreprocessingTests(unittest.TestCase):
 			with self.subTest(voice_id=voice_id):
 				self.assertEqual(preprocess("選設檢", voice_id), "選設檢")
 
+	def test_capital_sharp_s_falls_back_to_lowercase(self):
+		# ẞ (U+1E9E) should become ß (U+00DF), not "?"
+		self.assertEqual(preprocess("STRASSE \u1e9e", 65536), "STRASSE \u00df")
+
 
 if __name__ == "__main__":
 	unittest.main()
