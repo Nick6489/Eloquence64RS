@@ -204,6 +204,11 @@ def _resub(dct, s):
 def preprocess(text, voice_id):
 	"""Apply crash prevention fixes and text normalization for *voice_id*."""
 	text = _PHRASE_FINAL_EM_DASH.sub(",", text)
+	# Capital sharp s (ẞ, U+1E9E) is not in legacy Windows code pages and
+	# would be replaced with "?" by MBCS encoding.  Fall back to lowercase ß
+	# (U+00DF), which all Latin code pages recognise.  Applied globally
+	# because every Latin-based Eloquence voice can handle ß.
+	text = text.replace("\u1e9e", "\u00df")
 	# CHS and KOR get English fixes (they render embedded English text)
 	if voice_id in _ENGLISH_IDS + _CHINESE_ID + _KOREAN_ID:
 		text = _resub(english_fixes, text)
