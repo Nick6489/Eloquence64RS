@@ -442,6 +442,12 @@ PARAM_MAX = {
 	rgh: 100,
 	bth: 100,
 }
+# Temporary prosody changes (e.g. raised pitch for a capital letter) that are
+# currently in effect, as {param: (multiplier, offset)}.  set_voice() re-applies
+# these after a language change; without that, the base-param restore it does
+# would silently cancel a caps pitch raise queued just before the voice switch
+# (issue #130).
+_active_temp_prosody: Dict[int, Tuple[float, int]] = {}
 eciPath = os.path.abspath(os.path.join(os.path.dirname(__file__), "eloquence", "eci.dll"))
 langs = {
 	"esm": (131073, "Latin American Spanish"),
@@ -644,6 +650,10 @@ def cmdProsody(pr, multiplier, offset=0):
 	For revert: NVDA sends multiplier=1, offset=0.
 	Uses temporary=True so voice_params is never corrupted.
 	"""
+	if multiplier == 1 and offset == 0:
+		_active_temp_prosody.pop(pr, None)
+	else:
+		_active_temp_prosody[pr] = (multiplier, offset)
 	base = getVParam(pr)
 	value = int(base * multiplier + offset)
 	# Clamp to valid ECI parameter range.
@@ -659,6 +669,9 @@ def synth():
 
 
 def stop():
+	# NVDA re-sends any still-applicable prosody commands with the next
+	# utterance, so pending temporary prosody dies with the cancelled speech.
+	_active_temp_prosody.clear()
 	_client.stop()
 
 
@@ -703,6 +716,14 @@ def set_voice(vl):
 				)
 			except Exception:
 				pass
+		# Re-apply any temporary prosody still in effect (e.g. the raised pitch
+		# for a capital letter when the language change lands between the pitch
+		# raise and its revert).  The base-param restore above would otherwise
+		# cancel it and the capital would speak at normal pitch (issue #130).
+		for pr, (multiplier, offset) in _active_temp_prosody.items():
+			value = int(voice_params.get(pr, 0) * multiplier + offset)
+			value = max(0, min(value, PARAM_MAX.get(pr, 100)))
+			setVParam(pr, value, temporary=True)
 		# Update current language for proper encoding
 		_current_lang = VOICE_ID_TO_LANG.get(voice_id, "enu")
 		LOGGER.debug("Voice changed to ID %d, language code: %s", voice_id, _current_lang)
