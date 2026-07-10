@@ -3,6 +3,7 @@ setlocal
 set "here=%~dp0"
 cd /d "%here%"
 
+set "RUSTFLAGS=-C target-feature=+crt-static"
 cargo build --release --target i686-pc-windows-msvc --manifest-path native_host\Cargo.toml
 if errorlevel 1 exit /b %errorlevel%
 
