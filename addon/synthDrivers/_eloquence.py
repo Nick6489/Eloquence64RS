@@ -461,23 +461,8 @@ langs = {
 	"kor": (655360, "Korean"),
 }  # 0x000A0000
 
-# Language to encoding mapping for Asian languages
-# Using same codecs as IBMTTS which works correctly
-LANG_ENCODINGS = {
-	"chs": "gb18030",  # Mandarin Chinese
-	"jpn": "cp932",  # Japanese (Shift-JIS compatible)
-	"kor": "cp949",  # Korean
-}
-
-# Voice ID to language code mapping (inverse of langs)
-VOICE_ID_TO_LANG = {voice_id: lang_code for lang_code, (voice_id, _) in langs.items()}
-
-# Current language code (updated when voice is set)
-_current_lang = "enu"
-
-
 def initialize(indexCallback=None):
-	global onIndexReached, _current_lang
+	global onIndexReached
 	eci_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "eloquence", "eci.dll"))
 	try:
 		_client.ensure_started()
@@ -485,12 +470,12 @@ def initialize(indexCallback=None):
 		_ensure_synth_worker()
 		onIndexReached = indexCallback
 		voice_conf = config.conf.get("speech", {}).get("eci", {})
-		_current_lang = voice_conf.get("voice", "enu")
+		language = voice_conf.get("voice", "enu")
 		payload = {
 			"eciPath": eci_path,
 			"dataDirectory": os.path.join(os.path.dirname(eci_path)),
-			"language": _current_lang,
-			"languageId": langs.get(_current_lang, langs["enu"])[0],
+			"language": language,
+			"languageId": langs.get(language, langs["enu"])[0],
 			"enableAbbreviationDict": config.conf.get("speech", {}).get("eci", {}).get("ABRDICT", False),
 			"enablePhrasePrediction": config.conf.get("speech", {}).get("eci", {}).get("phrasePrediction", False),
 			"voiceVariant": int(voice_conf.get("variant", 0) or 0),
@@ -508,20 +493,8 @@ def initialize(indexCallback=None):
 	voice_params.update(response.get("voiceParams", {}))
 
 
-def speak(text):
+def speak(text_bytes):
 	try:
-		# Use appropriate encoding for Asian languages
-		encoding = LANG_ENCODINGS.get(_current_lang, "mbcs")
-		if encoding == "mbcs":
-			# Use Windows best-fit mapping so characters like Đ→D, ł→l
-			# instead of becoming '?' (see issue #90).
-			from ._text_preprocessing import _wchar_to_mbcs
-
-			text_bytes = _wchar_to_mbcs(text)
-			if text_bytes is None:
-				text_bytes = text.encode("mbcs", errors="replace")
-		else:
-			text_bytes = text.encode(encoding, errors="replace")
 		_client.send_command("addText", text=text_bytes, wait=False)
 	except Exception:
 		LOGGER.exception("Failed to send text to synthesizer")
@@ -577,7 +550,6 @@ def terminate():
 
 
 def set_voice(vl):
-	global _current_lang
 	try:
 		voice_id = int(vl)
 		# Save the user-configured voice params before the language change.
@@ -603,9 +575,7 @@ def set_voice(vl):
 				)
 			except Exception:
 				pass
-		# Update current language for proper encoding
-		_current_lang = VOICE_ID_TO_LANG.get(voice_id, "enu")
-		LOGGER.debug("Voice changed to ID %d, language code: %s", voice_id, _current_lang)
+		LOGGER.debug("Voice changed to ID %d", voice_id)
 	except Exception:
 		LOGGER.exception("Failed to set voice")
 

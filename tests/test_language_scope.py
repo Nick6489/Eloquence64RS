@@ -1,8 +1,11 @@
 import builtins
 import importlib
+import os
 import sys
+import tempfile
 import types
 import unittest
+from unittest import mock
 
 
 class _Command:
@@ -43,6 +46,15 @@ class VolumeCommand(_Command):
 
 class PhonemeCommand(_Command):
 	pass
+
+
+class _ImmediateTimer:
+	def __init__(self, _interval, function):
+		self.function = function
+		self.daemon = False
+
+	def start(self):
+		self.function()
 
 
 class _Notification:
@@ -194,14 +206,18 @@ def _install_nvda_stubs():
 	gui = types.ModuleType("gui")
 	gui.settingsDialogs = types.SimpleNamespace(SettingsPanel=object)
 	gui.guiHelper = types.SimpleNamespace()
-	gui.messageBox = lambda *args, **kwargs: None
+	gui.messageBoxCalls = []
+	gui.messageBox = lambda *args, **kwargs: gui.messageBoxCalls.append((args, kwargs))
 	sys.modules["gui"] = gui
-	sys.modules["wx"] = types.ModuleType("wx")
+	wx = types.ModuleType("wx")
+	wx.OK = 1
+	wx.ICON_WARNING = 2
+	wx.CallAfter = mock.Mock(side_effect=lambda func, *args, **kwargs: func(*args, **kwargs))
+	wx.CallLater = mock.Mock(side_effect=lambda _delay, func, *args, **kwargs: func(*args, **kwargs))
+	sys.modules["wx"] = wx
 	sys.modules["winsound"] = types.ModuleType("winsound")
-	sys.modules["config"] = types.SimpleNamespace(conf={})
-	sys.modules["core"] = types.SimpleNamespace(
-		postNvdaStartup=types.SimpleNamespace(register=lambda f: None)
-	)
+	sys.modules["config"] = types.SimpleNamespace(conf={}, save=lambda: None)
+	sys.modules["core"] = types.SimpleNamespace(postNvdaStartup=types.SimpleNamespace(register=mock.Mock()))
 	sys.modules["globalVars"] = types.SimpleNamespace(appArgs=types.SimpleNamespace(secure=False))
 	sys.modules["addonHandler"] = types.SimpleNamespace(initTranslation=lambda: None)
 
@@ -218,7 +234,7 @@ def _load_driver():
 		preprocess_calls.append((text, voice_id))
 		return f"{voice_id}:{text}"
 
-	module._text_preprocessing.preprocess = preprocess
+	module._eloquence_text._text_preprocessing.preprocess = preprocess
 	return module, eloquence_stub, preprocess_calls
 
 
@@ -232,6 +248,7 @@ def _new_driver(module):
 	driver._backquoteVoiceTags = False
 	driver._ABRDICT = False
 	driver._phrasePrediction = False
+	driver.rate = 50
 	return driver
 
 
@@ -256,6 +273,95 @@ def _queued_text(calls, eloquence_stub):
 
 
 class LanguageScopeTests(unittest.TestCase):
+	def test_system_config_host_hash_match_is_not_a_mismatch(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		with tempfile.TemporaryDirectory() as root:
+			addon_dir = os.path.join(root, "addon", "synthDrivers")
+			system_config_dir = os.path.join(
+				root,
+				"NVDA",
+				"systemConfig",
+				"addons",
+				"Eloquence",
+				"synthDrivers",
+			)
+			os.makedirs(addon_dir)
+			os.makedirs(system_config_dir)
+			helper_bytes = b"current host"
+			with open(os.path.join(addon_dir, "eloquence_host32.exe"), "wb") as file:
+				file.write(helper_bytes)
+			with open(os.path.join(system_config_dir, "eloquence_host32.exe"), "wb") as file:
+				file.write(helper_bytes)
+
+			with mock.patch.dict(os.environ, {"ProgramFiles": root}):
+				self.assertIsNone(module._detect_system_config_host_mismatch(addon_dir))
+
+	def test_system_config_host_hash_mismatch_is_detected(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		with tempfile.TemporaryDirectory() as root:
+			addon_dir = os.path.join(root, "addon", "synthDrivers")
+			system_config_dir = os.path.join(
+				root,
+				"NVDA",
+				"systemConfig",
+				"addons",
+				"Eloquence",
+				"synthDrivers",
+			)
+			os.makedirs(addon_dir)
+			os.makedirs(system_config_dir)
+			source_file = os.path.join(addon_dir, "eloquence_host32.exe")
+			target_file = os.path.join(system_config_dir, "eloquence_host32.exe")
+			with open(source_file, "wb") as file:
+				file.write(b"current host")
+			with open(target_file, "wb") as file:
+				file.write(b"old host")
+
+			with mock.patch.dict(os.environ, {"ProgramFiles": root}):
+				mismatch = module._detect_system_config_host_mismatch(addon_dir)
+
+		self.assertEqual(mismatch["source"], source_file)
+		self.assertEqual(mismatch["target"], target_file)
+		self.assertNotEqual(mismatch["sourceHash"], mismatch["targetHash"])
+
+	def test_system_config_host_mismatch_notice_is_scheduled_immediately(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		module.config.conf["eloquence"] = {
+			"system_config_host_mismatch_notice_sha256": "new",
+		}
+		mismatch = {
+			"source": r"C:\Users\nick\AppData\Roaming\nvda\addons\Eloquence\synthDrivers\eloquence_host32.exe",
+			"target": r"C:\Program Files\NVDA\systemConfig\addons\Eloquence\synthDrivers\eloquence_host32.exe",
+			"sourceHash": "new",
+			"targetHash": "old",
+		}
+		with (
+			mock.patch.object(module, "_detect_system_config_host_mismatch", return_value=mismatch),
+			mock.patch.object(module.threading, "Timer", _ImmediateTimer),
+		):
+			module._schedule_system_config_host_mismatch_notice()
+
+		self.assertEqual(len(module.gui.messageBoxCalls), 1)
+		module.wx.CallAfter.assert_called_once()
+		module.core.postNvdaStartup.register.assert_not_called()
+
+	def test_system_config_host_mismatch_notice_only_shows_once_per_process(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		mismatch = {
+			"source": r"C:\Users\nick\AppData\Roaming\nvda\addons\Eloquence\synthDrivers\eloquence_host32.exe",
+			"target": r"C:\Program Files\NVDA\systemConfig\addons\Eloquence\synthDrivers\eloquence_host32.exe",
+			"sourceHash": "new",
+			"targetHash": "old",
+		}
+		with (
+			mock.patch.object(module, "_detect_system_config_host_mismatch", return_value=mismatch),
+			mock.patch.object(module.threading, "Timer", _ImmediateTimer),
+		):
+			module._schedule_system_config_host_mismatch_notice()
+			module._schedule_system_config_host_mismatch_notice()
+
+		self.assertEqual(len(module.gui.messageBoxCalls), 1)
+
 	def test_driver_terminate_releases_native_host(self):
 		module, eloquence_stub, _preprocess_calls = _load_driver()
 		driver = _new_driver(module)
