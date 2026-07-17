@@ -14,6 +14,8 @@ log = logging.getLogger(__name__)
 class EloquenceUpdateManager:
 	REPO_OWNER = "Nick6489"
 	REPO_NAME = "Eloquence64RS"
+	UPDATE_BRANCH = "stable"
+	UPDATE_MANIFEST = "update.json"
 
 	def __init__(self, addon_dir):
 		self.addon_dir = os.path.abspath(addon_dir)
@@ -36,44 +38,25 @@ class EloquenceUpdateManager:
 
 	def check_for_updates(self):
 		"""
-		Checks GitHub for the latest release.
+		Checks the production manifest on the stable branch.
 		Returns (has_update, latest_version, download_url, changelog)
 		"""
-		api_url = f"https://api.github.com/repos/{self.REPO_OWNER}/{self.REPO_NAME}/releases?per_page=20"
+		manifest_url = (
+			f"https://raw.githubusercontent.com/{self.REPO_OWNER}/{self.REPO_NAME}/"
+			f"{self.UPDATE_BRANCH}/{self.UPDATE_MANIFEST}"
+		)
 		try:
 			headers = {"User-Agent": "NVDA-Eloquence-Updater"}
-			req = urllib.request.Request(api_url, headers=headers)
+			req = urllib.request.Request(manifest_url, headers=headers)
 			with urllib.request.urlopen(req) as response:
-				releases = json.loads(response.read().decode())
+				data = json.loads(response.read().decode())
 
-			# GitHub's /releases/latest endpoint excludes prereleases. RC builds should
-			# therefore follow newer RCs, while stable builds should remain on stable releases.
-			allow_prerelease = "rc" in self.CURRENT_VERSION.lower()
-			data = next(
-				(
-					release
-					for release in releases
-					if not release.get("draft") and (allow_prerelease or not release.get("prerelease"))
-				),
-				None,
-			)
-			if data is None:
-				raise RuntimeError(_("No applicable Eloquence64RS release was found."))
-
-			latest_version = data.get("tag_name", "0.0.0").lstrip("v")
-			download_url = None
-
-			# Standard NVDA installation requires a packaged add-on bundle.
-			assets = data.get("assets", [])
-			for asset in assets:
-				if asset["name"].endswith(".nvda-addon"):
-					download_url = asset["browser_download_url"]
-					break
-
-			if not download_url:
+			latest_version = str(data.get("version", "0.0.0")).lstrip("v")
+			download_url = data.get("download_url")
+			if not isinstance(download_url, str) or not download_url.endswith(".nvda-addon"):
 				raise RuntimeError(_("Latest release does not include an NVDA add-on package."))
 
-			changelog = data.get("body", "No changelog provided.")
+			changelog = data.get("changelog", "No changelog provided.")
 
 			has_update = self._is_newer(latest_version, self.CURRENT_VERSION)
 			return has_update, latest_version, download_url, changelog

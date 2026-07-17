@@ -1,0 +1,5 @@
+{
+  "version": "19.0-RS",
+  "download_url": "https://github.com/Nick6489/Eloquence64RS/releases/download/v19.0-RS/Eloquence-v19.0-RS.nvda-addon",
+  "changelog": "Eloquence64RS 19.0 is the stable release of the new 64-bit Rust-hosted driver. It improves Say All reliability, language and text encoding behavior, punctuation pauses, native-host deployment, and secure-screen helper detection."
+}

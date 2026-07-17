@@ -30,6 +30,11 @@ All Eloquence64RS release versions contain the `RS` marker. Release candidates
 use versions such as `19.0-RS-RC1`; the corresponding stable release is
 `19.0-RS`.
 
+The built-in add-on updater reads `update.json` only from the repository's
+`stable` branch. Work on the development branch, including prereleases, is not
+offered to installed users until that production manifest is deliberately
+updated on `stable`.
+
 ## Acknowledgements
 
 I am standing on the shoulders of giants here, taking logic from

@@ -74,15 +74,10 @@ def _load_updater():
 class AddonUpdaterInstallTests(unittest.TestCase):
 	def test_check_for_updates_uses_rs_release_repository(self):
 		module = _load_updater()
-		payload = [{
-			"tag_name": "v2",
-			"assets": [
-				{
-					"name": "Eloquence-v2.nvda-addon",
-					"browser_download_url": "https://example.test/Eloquence.nvda-addon",
-				},
-			],
-		}]
+		payload = {
+			"version": "v2",
+			"download_url": "https://example.test/Eloquence.nvda-addon",
+		}
 		requested_urls = []
 
 		def urlopen(req):
@@ -99,15 +94,12 @@ class AddonUpdaterInstallTests(unittest.TestCase):
 
 		self.assertEqual(
 			requested_urls,
-			["https://api.github.com/repos/Nick6489/Eloquence64RS/releases?per_page=20"],
+			["https://raw.githubusercontent.com/Nick6489/Eloquence64RS/stable/update.json"],
 		)
 
 	def test_check_for_updates_requires_packaged_addon_asset(self):
 		module = _load_updater()
-		payload = [{
-			"tag_name": "v2",
-			"assets": [{"name": "source.zip", "browser_download_url": "https://example.test/source.zip"}],
-		}]
+		payload = {"version": "v2", "download_url": "https://example.test/source.zip"}
 		module.urllib.request.urlopen = lambda req: _FakeUrlResponse(payload)
 
 		with tempfile.TemporaryDirectory() as root:
@@ -120,17 +112,11 @@ class AddonUpdaterInstallTests(unittest.TestCase):
 
 	def test_check_for_updates_uses_nvda_addon_release_asset(self):
 		module = _load_updater()
-		payload = [{
-			"tag_name": "v2",
-			"body": "Changes",
-			"assets": [
-				{"name": "source.zip", "browser_download_url": "https://example.test/source.zip"},
-				{
-					"name": "Eloquence-v2.nvda-addon",
-					"browser_download_url": "https://example.test/Eloquence.nvda-addon",
-				},
-			],
-		}]
+		payload = {
+			"version": "v2",
+			"changelog": "Changes",
+			"download_url": "https://example.test/Eloquence.nvda-addon",
+		}
 		module.urllib.request.urlopen = lambda req: _FakeUrlResponse(payload)
 
 		with tempfile.TemporaryDirectory() as root:
@@ -143,57 +129,22 @@ class AddonUpdaterInstallTests(unittest.TestCase):
 				(True, "2", "https://example.test/Eloquence.nvda-addon", "Changes"),
 			)
 
-	def test_rc_build_follows_prerelease(self):
+	def test_rc_build_follows_only_production_manifest(self):
 		module = _load_updater()
-		payload = [
-			{
-				"tag_name": "v19.0-RS-RC2",
-				"prerelease": True,
-				"assets": [
-					{
-						"name": "Eloquence-v19.0-RS-RC2.nvda-addon",
-						"browser_download_url": "https://example.test/rc2.nvda-addon",
-					},
-				],
-			},
-		]
+		payload = {
+			"version": "19.0-RS",
+			"download_url": "https://example.test/stable.nvda-addon",
+		}
 		module.urllib.request.urlopen = lambda req: _FakeUrlResponse(payload)
 
 		with tempfile.TemporaryDirectory() as root:
 			with open(os.path.join(root, "manifest.ini"), "w", encoding="utf-8") as manifest:
-				manifest.write("version = v19.0-RS-RC1\n")
+				manifest.write("version = v19.0-RS-RC3\n")
 			manager = module.EloquenceUpdateManager(os.path.join(root, "synthDrivers"))
 
 			self.assertEqual(
 				manager.check_for_updates(),
-				(True, "19.0-RS-RC2", "https://example.test/rc2.nvda-addon", "No changelog provided."),
-			)
-
-	def test_stable_build_ignores_prerelease(self):
-		module = _load_updater()
-		payload = [
-			{"tag_name": "v20.0-RS-RC1", "prerelease": True, "assets": []},
-			{
-				"tag_name": "v19.1-RS",
-				"prerelease": False,
-				"assets": [
-					{
-						"name": "Eloquence-v19.1-RS.nvda-addon",
-						"browser_download_url": "https://example.test/stable.nvda-addon",
-					},
-				],
-			},
-		]
-		module.urllib.request.urlopen = lambda req: _FakeUrlResponse(payload)
-
-		with tempfile.TemporaryDirectory() as root:
-			with open(os.path.join(root, "manifest.ini"), "w", encoding="utf-8") as manifest:
-				manifest.write("version = v19.0-RS\n")
-			manager = module.EloquenceUpdateManager(os.path.join(root, "synthDrivers"))
-
-			self.assertEqual(
-				manager.check_for_updates(),
-				(True, "19.1-RS", "https://example.test/stable.nvda-addon", "No changelog provided."),
+				(True, "19.0-RS", "https://example.test/stable.nvda-addon", "No changelog provided."),
 			)
 
 	def test_final_release_is_newer_than_release_candidate(self):
