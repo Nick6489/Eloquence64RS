@@ -57,6 +57,14 @@ class NativeProtocolTests(unittest.TestCase):
 		self.assertEqual((reader.u8(), reader.u8(), reader.i32()), (1, 0, 3))
 		reader.finish()
 
+	def test_audio_quality_command_encodes_enhanced_mode(self):
+		self.connection.send(
+			{"type": "command", "id": 3, "command": "setAudioQuality", "payload": {"enhanced": True}}
+		)
+		kind, request_id, payload = list(self.module.frames(self.writer.getvalue()))[-1]
+		self.assertEqual((kind, request_id), (self.module.SET_AUDIO_QUALITY, 3))
+		self.assertEqual(payload, b"\x01")
+
 	def test_response_state_preserves_integer_parameter_keys(self):
 		payload = b"".join(
 			(

@@ -56,6 +56,58 @@ class FakeClient:
 
 
 class AudioWorkerTests(unittest.TestCase):
+	def test_enhanced_mode_constructs_22_khz_wave_player(self):
+		module = _load_client_module()
+		module._audio_quality = "enhanced"
+		module.config.conf = {"audio": {"outputDevice": "test-device"}}
+		player = Mock()
+		module.nvwave.WavePlayer = Mock(return_value=player)
+		worker = Mock()
+		module.AudioWorker = Mock(return_value=worker)
+		client = module.EloquenceHostClient()
+
+		client.initialize_audio()
+
+		module.nvwave.WavePlayer.assert_called_once_with(
+			1,
+			module.ENHANCED_SAMPLE_RATE,
+			16,
+			outputDevice="test-device",
+		)
+		module.AudioWorker.assert_called_once_with(player, client._audio_queue, client)
+		worker.start.assert_called_once_with()
+
+	def test_audio_quality_switch_reconfigures_host_and_player(self):
+		module = _load_client_module()
+		client = Mock()
+		client._host = object()
+		module._client = client
+
+		module.set_audio_quality("enhanced")
+
+		self.assertEqual(module.get_audio_quality(), "enhanced")
+		self.assertEqual(
+			client.method_calls,
+			[
+				unittest.mock.call.stop(),
+				unittest.mock.call.send_command("setAudioQuality", enhanced=True),
+				unittest.mock.call.close_audio(),
+				unittest.mock.call.initialize_audio(),
+			],
+		)
+
+	def test_invalid_audio_quality_falls_back_to_standard(self):
+		module = _load_client_module()
+		module._audio_quality = "enhanced"
+		client = Mock()
+		client._host = None
+		module._client = client
+
+		module.set_audio_quality("unknown")
+
+		self.assertEqual(module.get_audio_quality(), "standard")
+		client.send_command.assert_not_called()
+
 	def test_empty_index_marker_queues_non_blocking_playback_callback(self):
 		module = _load_client_module()
 		events = []

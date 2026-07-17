@@ -23,6 +23,7 @@ DELETE = 0x0016
 SET_PARAM = 0x0020
 SET_VOICE_PARAM = 0x0021
 COPY_VOICE = 0x0022
+SET_AUDIO_QUALITY = 0x0023
 HELLO_ACK = 0x8001
 RESPONSE = 0x8002
 ERROR_RESPONSE = 0x8003
@@ -209,6 +210,8 @@ class NativeHostConnection:
 			return SET_VOICE_PARAM, struct.pack("<ii", int(payload["paramId"]), int(payload["value"]))
 		if command == "copyVoice":
 			return COPY_VOICE, struct.pack("<i", int(payload["variant"]))
+		if command == "setAudioQuality":
+			return SET_AUDIO_QUALITY, struct.pack("<B", bool(payload["enhanced"]))
 		raise NativeHostProtocolError(f"unsupported native host command: {command}")
 
 	def _decode_event(self, kind: int, payload: bytes):

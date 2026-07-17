@@ -1,6 +1,7 @@
 //! Single-client host server over inherited stdin/stdout pipes.
 
 use crate::assets::PreparedEci;
+use crate::audio::AudioQuality;
 use crate::eci::EciApi;
 use crate::engine::{EciEngine, EngineEvent, StopController};
 use crate::protocol::{Frame, MessageKind, ProtocolError, AUTH_KEY_LEN};
@@ -136,6 +137,15 @@ impl Runtime {
             ClientCommand::CopyVoice(variant) => {
                 self.engine.copy_voice(variant);
                 Ok(self.state_payload())
+            }
+            ClientCommand::SetAudioQuality(enhanced) => {
+                let quality = if enhanced {
+                    AudioQuality::Enhanced
+                } else {
+                    AudioQuality::Standard
+                };
+                self.engine.set_audio_quality(quality);
+                Ok(Vec::new())
             }
             _ => Err("command is not valid on the engine worker".to_owned()),
         }

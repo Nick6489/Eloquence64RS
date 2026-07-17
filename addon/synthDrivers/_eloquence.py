@@ -22,6 +22,9 @@ LOGGER = logging.getLogger(__name__)
 
 HOST_EXECUTABLE = "eloquence_host32.exe"
 AUTH_KEY_BYTES = 16
+STANDARD_SAMPLE_RATE = 11025
+ENHANCED_SAMPLE_RATE = 22050
+_audio_quality = "standard"
 
 
 # Audio handling -----------------------------------------------------------------
@@ -245,13 +248,14 @@ class EloquenceHostClient:
 	def initialize_audio(self) -> None:
 		if self._player:
 			return
+		sample_rate = ENHANCED_SAMPLE_RATE if _audio_quality == "enhanced" else STANDARD_SAMPLE_RATE
 		if version_year >= 2025:
 			device = config.conf["audio"]["outputDevice"]
-			player = nvwave.WavePlayer(1, 11025, 16, outputDevice=device)
+			player = nvwave.WavePlayer(1, sample_rate, 16, outputDevice=device)
 		else:
 			device = config.conf["speech"]["outputDevice"]
 			nvwave.WavePlayer.MIN_BUFFER_MS = 1500
-			player = nvwave.WavePlayer(1, 11025, 16, outputDevice=device, buffered=True)
+			player = nvwave.WavePlayer(1, sample_rate, 16, outputDevice=device, buffered=True)
 		self._player = player
 		self._audio_worker = AudioWorker(player, self._audio_queue, self)
 		self._audio_worker.start()
@@ -542,6 +546,28 @@ def pause(switch):
 
 def close_audio():
 	_client.close_audio()
+
+
+def get_audio_quality():
+	return _audio_quality
+
+
+def set_audio_quality(value):
+	"""Switch between unmodified 11 kHz PCM and enhanced 22 kHz output."""
+	global _audio_quality
+	quality = "enhanced" if value == "enhanced" else "standard"
+	if quality == _audio_quality:
+		return
+
+	enhanced = quality == "enhanced"
+	if _client._host:
+		# Stop and invalidate queued PCM before changing the host's output format.
+		_client.stop()
+		_client.send_command("setAudioQuality", enhanced=enhanced)
+		_client.close_audio()
+	_audio_quality = quality
+	if _client._host:
+		_client.initialize_audio()
 
 
 def terminate():

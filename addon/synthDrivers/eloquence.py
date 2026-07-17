@@ -792,6 +792,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		BooleanDriverSetting("phrasePrediction", _("Enable phras&e prediction"), False),
 		# Translators: A synth setting available in speech settings dialog
 		DriverSetting("pauseMode", _("Shorten &pauses"), defaultVal="0"),
+		# Translators: A synth setting available in speech settings dialog
+		DriverSetting("audioQuality", _("Audio &quality"), defaultVal="standard"),
 	)
 	supportedCommands = {
 		IndexCommand,
@@ -815,6 +817,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	# Initialize _pause_mode at class level to prevent issues with setting restoration
 	_pause_mode = 0
+	_audioQuality = "standard"
 
 	@classmethod
 	def check(cls):
@@ -1068,6 +1071,27 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	def _get_pauseMode(self):
 		return str(self._pause_mode)
+
+	_audioQualityOptions = {
+		# Translators: An option in the "Audio quality" combo box in speech settings.
+		"standard": StringParameterInfo("standard", _("Standard 11 kHz")),
+		# Translators: An option in the "Audio quality" combo box in speech settings.
+		"enhanced": StringParameterInfo("enhanced", _("Enhanced 22 kHz")),
+	}
+
+	def _get_availableAudioqualitys(self):
+		# NVDA constructs this property name with setting.id.capitalize() + "s".
+		return self._audioQualityOptions
+
+	def _set_audioQuality(self, value):
+		quality = "enhanced" if value == "enhanced" else "standard"
+		if quality == self._audioQuality:
+			return
+		_eloquence.set_audio_quality(quality)
+		self._audioQuality = quality
+
+	def _get_audioQuality(self):
+		return self._audioQuality
 
 	_backquoteVoiceTags = False
 	_ABRDICT = False

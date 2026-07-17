@@ -142,6 +142,7 @@ class _EloquenceStub(types.ModuleType):
 		self.stopped = False
 		self.processed = False
 		self.immediate_calls = []
+		self.audio_quality_calls = []
 		self.terminated = False
 
 	def cmdProsody(self, *args):
@@ -165,6 +166,9 @@ class _EloquenceStub(types.ModuleType):
 
 	def stop(self):
 		self.stopped = True
+
+	def set_audio_quality(self, quality):
+		self.audio_quality_calls.append(quality)
 
 	def getVParam(self, param):
 		return self.voice_params.get(param, 0)
@@ -245,6 +249,7 @@ def _new_driver(module):
 	driver._lastEngineVoice = "262144"
 	driver._languageOverrideActive = False
 	driver._pause_mode = 1
+	driver._audioQuality = "standard"
 	driver._backquoteVoiceTags = False
 	driver._ABRDICT = False
 	driver._phrasePrediction = False
@@ -273,6 +278,25 @@ def _queued_text(calls, eloquence_stub):
 
 
 class LanguageScopeTests(unittest.TestCase):
+	def test_audio_quality_setting_exposes_standard_and_enhanced_modes(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+
+		self.assertEqual(
+			list(driver._get_availableAudioqualitys()),
+			["standard", "enhanced"],
+		)
+
+	def test_audio_quality_setting_updates_backend_once(self):
+		module, eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+
+		driver._set_audioQuality("enhanced")
+		driver._set_audioQuality("enhanced")
+
+		self.assertEqual(driver._get_audioQuality(), "enhanced")
+		self.assertEqual(eloquence_stub.audio_quality_calls, ["enhanced"])
+
 	def test_system_config_host_hash_match_is_not_a_mismatch(self):
 		module, _eloquence_stub, _preprocess_calls = _load_driver()
 		with tempfile.TemporaryDirectory() as root:

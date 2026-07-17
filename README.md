@@ -57,6 +57,20 @@ the installed configuration is never rewritten. If the executable cannot
 start, authenticate, or initialize ECI, synth initialization fails with the
 cause logged; NVDA can then select its next available synthesizer.
 
+## Audio quality
+
+Eloquence produces mono 16-bit PCM at 11,025 Hz. The **Audio quality** synth
+setting offers two output modes:
+
+- **Standard 11 kHz** passes the engine PCM through unchanged and is the
+  default.
+- **Enhanced 22 kHz** applies an original, stateful 2x interpolation and gentle
+  high-frequency emphasis in the Rust host before playback.
+
+Enhanced mode is an optional tonal treatment, not additional source bandwidth.
+Changing the mode safely cancels current speech, resets the audio processor,
+and recreates NVDA's `WavePlayer` with the matching sample rate.
+
 ## Traditional Chinese Script Conversion
 
 When the Mandarin Chinese voice is selected, text preprocessing converts

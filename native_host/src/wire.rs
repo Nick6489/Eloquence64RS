@@ -29,6 +29,7 @@ pub enum ClientCommand {
     SetParam { parameter: i32, value: i32 },
     SetVoiceParam { parameter: i32, value: i32 },
     CopyVoice(i32),
+    SetAudioQuality(bool),
 }
 
 impl ClientCommand {
@@ -66,6 +67,7 @@ impl ClientCommand {
                 value: payload.get_i32()?,
             },
             MessageKind::CopyVoice => Self::CopyVoice(payload.get_i32()?),
+            MessageKind::SetAudioQuality => Self::SetAudioQuality(payload.get_u8()? != 0),
             kind => return Err(ProtocolError::UnexpectedMessageKind(kind as u16)),
         };
         payload.finish()?;
@@ -159,6 +161,15 @@ mod tests {
                 enable_phrase_prediction: false,
                 voice_variant: 3,
             })
+        );
+    }
+
+    #[test]
+    fn audio_quality_payload_decodes_enhanced_mode() {
+        let frame = Frame::new(MessageKind::SetAudioQuality, 9, vec![1]);
+        assert_eq!(
+            ClientCommand::decode(&frame).unwrap(),
+            ClientCommand::SetAudioQuality(true)
         );
     }
 
