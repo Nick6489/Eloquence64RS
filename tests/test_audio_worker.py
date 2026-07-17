@@ -56,6 +56,35 @@ class FakeClient:
 
 
 class AudioWorkerTests(unittest.TestCase):
+	def test_initialize_restores_enhanced_mode_before_opening_audio(self):
+		module = _load_client_module()
+		module._audio_quality = "enhanced"
+		module.config.conf = {}
+		client = Mock()
+		client.send_command.side_effect = [
+			{"params": {}, "voiceParams": {}},
+			{},
+		]
+		module._client = client
+		module._ensure_synth_worker = Mock()
+
+		module.initialize()
+
+		self.assertEqual(
+			[method[0] for method in client.method_calls],
+			[
+				"ensure_started",
+				"send_command",
+				"send_command",
+				"initialize_audio",
+			],
+		)
+		self.assertEqual(
+			client.send_command.call_args_list[1],
+			unittest.mock.call("setAudioQuality", enhanced=True),
+		)
+		module._ensure_synth_worker.assert_called_once_with()
+
 	def test_enhanced_mode_constructs_22_khz_wave_player(self):
 		module = _load_client_module()
 		module._audio_quality = "enhanced"

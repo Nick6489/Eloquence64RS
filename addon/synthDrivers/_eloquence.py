@@ -470,8 +470,6 @@ def initialize(indexCallback=None):
 	eci_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "eloquence", "eci.dll"))
 	try:
 		_client.ensure_started()
-		_client.initialize_audio()
-		_ensure_synth_worker()
 		onIndexReached = indexCallback
 		voice_conf = config.conf.get("speech", {}).get("eci", {})
 		language = voice_conf.get("voice", "enu")
@@ -485,6 +483,13 @@ def initialize(indexCallback=None):
 			"voiceVariant": int(voice_conf.get("variant", 0) or 0),
 		}
 		response = _client.send_command("initialize", **payload)
+		# A newly launched host always starts in standard mode, while this
+		# module intentionally retains the selected quality across synth driver
+		# instances. Restore that desired format before opening WavePlayer so
+		# both sides agree when Eloquence is reselected.
+		_client.send_command("setAudioQuality", enhanced=_audio_quality == "enhanced")
+		_client.initialize_audio()
+		_ensure_synth_worker()
 	except Exception:
 		LOGGER.exception("Eloquence native host initialization failed")
 		try:
