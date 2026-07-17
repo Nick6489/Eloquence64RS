@@ -26,9 +26,9 @@ will fail to load on the logon screen, UAC prompts, and other secure screens.
 After installing and restarting NVDA, open **NVDA Settings > Eloquence** and
 choose **Copy Helper to System Config (for Logon Screen)**.
 
-All Eloquence64RS release versions contain the `RS` marker. Release candidates
-use versions such as `19.0-RS-RC1`; the corresponding stable release is
-`19.0-RS`.
+All Eloquence64RS release versions contain the `RS` marker. Beta builds use
+versions such as `19.1-RS-beta1`, release candidates use versions such as
+`19.1-RS-RC1`, and the corresponding stable release is `19.1-RS`.
 
 The built-in add-on updater reads `update.json` only from the repository's
 `stable` branch. Work on the development branch, including prereleases, is not

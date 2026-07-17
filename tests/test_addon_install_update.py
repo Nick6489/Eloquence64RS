@@ -154,6 +154,14 @@ class AddonUpdaterInstallTests(unittest.TestCase):
 		self.assertTrue(manager._is_newer("v19.0-RS", "v19.0-RS-RC2"))
 		self.assertFalse(manager._is_newer("v19.0-RS-RC2", "v19.0-RS"))
 
+	def test_rs_beta_release_order(self):
+		module = _load_updater()
+		manager = module.EloquenceUpdateManager(os.getcwd())
+		self.assertTrue(manager._is_newer("v19.1-RS-beta2", "v19.1-RS-beta1"))
+		self.assertTrue(manager._is_newer("v19.1-RS-RC1", "v19.1-RS-beta2"))
+		self.assertTrue(manager._is_newer("v19.1-RS", "v19.1-RS-beta1"))
+		self.assertFalse(manager._is_newer("v19.0-RS", "v19.1-RS-beta1"))
+
 	def test_install_update_calls_nvda_addon_store_install_api(self):
 		module = _load_updater()
 		calls = []

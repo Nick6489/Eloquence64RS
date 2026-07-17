@@ -66,15 +66,23 @@ class EloquenceUpdateManager:
 			raise
 
 	def _is_newer(self, latest, current):
-		# Eloquence64RS versions use tags such as v19.0-RS-RC2 and v19.0-RS.
-		# A final release is newer than its release candidates.
+		# Eloquence64RS prereleases progress from beta to RC to final.
 		def parse_rs_version(v):
-			match = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:-RS)?(?:-RC(\d+))?", v, re.IGNORECASE)
+			match = re.fullmatch(
+				r"v?(\d+(?:\.\d+)*)(?:-RS)?(?:-(?:beta(\d+)|RC(\d+)))?",
+				v,
+				re.IGNORECASE,
+			)
 			if not match:
 				return None
 			base = tuple(int(part) for part in match.group(1).split("."))
-			rc = match.group(2)
-			return base, (0, int(rc)) if rc is not None else (1, 0)
+			beta = match.group(2)
+			rc = match.group(3)
+			if beta is not None:
+				return base, (0, int(beta))
+			if rc is not None:
+				return base, (1, int(rc))
+			return base, (2, 0)
 
 		def parse_version(v):
 			return [int(x) for x in re.findall(r"\d+", v)]
