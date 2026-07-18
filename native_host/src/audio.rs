@@ -14,8 +14,7 @@ pub enum AudioQuality {
 /// its documented 22.05 kHz mode. Enhanced mode reconstructs a 22.05 kHz
 /// stream locally in three deliberately separate stages:
 ///
-/// 1. a smooth presence shelf restores articulation lost near the top of the
-///    native speech band;
+/// 1. gentle body and presence shaping restores vocal weight and articulation;
 /// 2. a 31-tap polyphase low-pass interpolator inserts the new samples while
 ///    rejecting the mirrored 7--11 kHz image band;
 /// 3. conservative output gain and saturation preserve headroom.
@@ -30,6 +29,10 @@ pub struct AudioProcessor {
     shelf_x2: f32,
     shelf_y1: f32,
     shelf_y2: f32,
+    body_x1: f32,
+    body_x2: f32,
+    body_y1: f32,
+    body_y2: f32,
     history: [f32; Self::HISTORY_LENGTH],
 }
 
@@ -41,6 +44,10 @@ impl Default for AudioProcessor {
             shelf_x2: 0.0,
             shelf_y1: 0.0,
             shelf_y2: 0.0,
+            body_x1: 0.0,
+            body_x2: 0.0,
+            body_y1: 0.0,
+            body_y2: 0.0,
             history: [0.0; Self::HISTORY_LENGTH],
         }
     }
@@ -58,6 +65,15 @@ impl AudioProcessor {
     const SHELF_B2: f32 = 0.261_982_5;
     const SHELF_A1: f32 = -0.003_102_395;
     const SHELF_A2: f32 = 0.171_574_58;
+
+    // A broad 0.4 dB peaking EQ centred at 1.4 kHz (Q 0.8), calculated for
+    // 11.025 kHz input. This restores a small amount of vocal body without
+    // changing bass or the upper-presence and image-rejection response.
+    const BODY_B0: f32 = 1.014_337_4;
+    const BODY_B1: f32 = -0.971_640_8;
+    const BODY_B2: f32 = 0.377_226_1;
+    const BODY_A1: f32 = -0.971_640_8;
+    const BODY_A2: f32 = 0.391_563_48;
 
     // Even polyphase arm of a 31-tap Hann-windowed sinc interpolator. The odd
     // arm is a delayed original sample. Both arms have unity DC gain.
@@ -94,6 +110,10 @@ impl AudioProcessor {
         self.shelf_x2 = 0.0;
         self.shelf_y1 = 0.0;
         self.shelf_y2 = 0.0;
+        self.body_x1 = 0.0;
+        self.body_x2 = 0.0;
+        self.body_y1 = 0.0;
+        self.body_y2 = 0.0;
         self.history.fill(0.0);
     }
 
@@ -104,7 +124,8 @@ impl AudioProcessor {
 
         let mut output = Vec::with_capacity(input.len() * 2);
         for &sample in input {
-            let shaped = self.shape_presence(f32::from(sample));
+            let present = self.shape_presence(f32::from(sample));
+            let shaped = self.shape_body(present);
             self.history.copy_within(..Self::HISTORY_LENGTH - 1, 1);
             self.history[0] = shaped;
 
@@ -132,6 +153,18 @@ impl AudioProcessor {
         self.shelf_x1 = sample;
         self.shelf_y2 = self.shelf_y1;
         self.shelf_y1 = output;
+        output
+    }
+
+    fn shape_body(&mut self, sample: f32) -> f32 {
+        let output =
+            Self::BODY_B0 * sample + Self::BODY_B1 * self.body_x1 + Self::BODY_B2 * self.body_x2
+                - Self::BODY_A1 * self.body_y1
+                - Self::BODY_A2 * self.body_y2;
+        self.body_x2 = self.body_x1;
+        self.body_x1 = sample;
+        self.body_y2 = self.body_y1;
+        self.body_y1 = output;
         output
     }
 
@@ -228,6 +261,23 @@ mod tests {
     }
 
     #[test]
+    fn body_eq_gently_lifts_the_vocal_body_band() {
+        let centre_db = body_eq_gain_db(1400.0);
+        let low_db = body_eq_gain_db(250.0);
+        let high_db = body_eq_gain_db(4000.0);
+
+        assert!(
+            (0.35..=0.45).contains(&centre_db),
+            "body lift at 1.4 kHz was {centre_db:.2} dB"
+        );
+        assert!(low_db.abs() < 0.10, "bass changed by {low_db:.2} dB");
+        assert!(
+            high_db.abs() < 0.10,
+            "upper presence changed by {high_db:.2} dB"
+        );
+    }
+
+    #[test]
     fn interpolator_rejects_the_mirrored_image_band() {
         let frequency = 4000.0;
         let input = make_tone(frequency, 4096);
@@ -256,6 +306,28 @@ mod tests {
             .sum::<f32>()
             / settled.len() as f32)
             .sqrt()
+    }
+
+    fn body_eq_gain_db(frequency: f32) -> f32 {
+        let input = make_tone(frequency, 4096);
+        let input_rms = (input[128..]
+            .iter()
+            .map(|&sample| f32::from(sample).powi(2))
+            .sum::<f32>()
+            / (input.len() - 128) as f32)
+            .sqrt();
+        let mut processor = AudioProcessor::default();
+        let output = input
+            .into_iter()
+            .map(|sample| processor.shape_body(f32::from(sample)))
+            .collect::<Vec<_>>();
+        let output_rms = (output[128..]
+            .iter()
+            .map(|sample| sample.powi(2))
+            .sum::<f32>()
+            / (output.len() - 128) as f32)
+            .sqrt();
+        20.0 * (output_rms / input_rms).log10()
     }
 
     fn make_tone(frequency: f32, length: usize) -> Vec<i16> {

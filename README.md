@@ -64,8 +64,9 @@ setting offers two output modes:
 
 - **Standard 11 kHz** passes the engine PCM through unchanged and is the
   default.
-- **Enhanced 22 kHz** applies an original, stateful 2x interpolation and gentle
-  high-frequency emphasis in the Rust host before playback.
+- **Enhanced 22 kHz** applies an original, stateful 2x interpolation, a subtle
+  vocal-body lift, and gentle high-frequency emphasis in the Rust host before
+  playback.
 
 Enhanced mode is an optional tonal treatment, not additional source bandwidth.
 Changing the mode safely cancels current speech, resets the audio processor,
