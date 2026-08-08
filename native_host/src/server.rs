@@ -61,7 +61,7 @@ struct Runtime {
     // temporary directory is removed.
     engine: EciEngine,
     _assets: PreparedEci,
-    data_directory: PathBuf,
+    dictionary_directory: Option<PathBuf>,
     language_code: String,
 }
 
@@ -71,6 +71,11 @@ impl Runtime {
         events: SyncSender<EngineEvent>,
     ) -> Result<Self, String> {
         let data_directory = PathBuf::from(&config.data_directory);
+        let dictionary_directory = if config.dictionary_directory.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(&config.dictionary_directory))
+        };
         let assets = PreparedEci::create(Path::new(&config.eci_path), &data_directory)
             .map_err(|error| error.to_string())?;
         let api = EciApi::load(assets.dll_path().as_os_str()).map_err(|error| error.to_string())?;
@@ -86,7 +91,11 @@ impl Runtime {
             i32::from(config.enable_phrase_prediction),
         );
         engine
-            .load_dictionaries(&config.language_code, &data_directory)
+            .activate_dictionaries(
+                &config.language_code,
+                dictionary_directory.as_deref(),
+                false,
+            )
             .map_err(|error| error.to_string())?;
         if config.voice_variant != 0 {
             engine.copy_voice(config.voice_variant);
@@ -94,7 +103,7 @@ impl Runtime {
         Ok(Self {
             engine,
             _assets: assets,
-            data_directory,
+            dictionary_directory,
             language_code: config.language_code,
         })
     }
@@ -125,7 +134,11 @@ impl Runtime {
                 if parameter == ECI_LANGUAGE_DIALECT {
                     self.language_code = language_code_for_id(value).to_owned();
                     self.engine
-                        .load_dictionaries(&self.language_code, &self.data_directory)
+                        .activate_dictionaries(
+                            &self.language_code,
+                            self.dictionary_directory.as_deref(),
+                            false,
+                        )
                         .map_err(|error| error.to_string())?;
                 }
                 Ok(self.state_payload())
@@ -146,6 +159,21 @@ impl Runtime {
                 };
                 self.engine.set_audio_quality(quality);
                 Ok(Vec::new())
+            }
+            ClientCommand::SetDictionaryDirectory { directory, reload } => {
+                self.dictionary_directory = if directory.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(directory))
+                };
+                self.engine
+                    .activate_dictionaries(
+                        &self.language_code,
+                        self.dictionary_directory.as_deref(),
+                        reload,
+                    )
+                    .map(|()| Vec::new())
+                    .map_err(|error| error.to_string())
             }
             _ => Err("command is not valid on the engine worker".to_owned()),
         }

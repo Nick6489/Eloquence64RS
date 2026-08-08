@@ -15,8 +15,11 @@ from typing import Any, Dict, Optional, Tuple
 from ._eloquence_native import NativeHostConnection
 
 import config
+import globalVars
 import nvwave
 from buildVersion import version_year
+
+from . import _eloquence_dictionaries
 
 LOGGER = logging.getLogger(__name__)
 
@@ -465,21 +468,35 @@ langs = {
 	"kor": (655360, "Korean"),
 }  # 0x000A0000
 
+
 def initialize(indexCallback=None):
 	global onIndexReached
 	eci_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "eloquence", "eci.dll"))
 	try:
-		_client.ensure_started()
 		onIndexReached = indexCallback
 		voice_conf = config.conf.get("speech", {}).get("eci", {})
 		language = voice_conf.get("voice", "enu")
+		data_directory = os.path.dirname(eci_path)
+		dictionary_profile = _eloquence_dictionaries.resolve_profile(
+			config.conf.get("eloquence", {}),
+			data_directory,
+			migrate=not globalVars.appArgs.secure,
+		)
+		dictionary_directory = _eloquence_dictionaries.active_directory(
+			data_directory,
+			dictionary_profile,
+		)
+		_client.ensure_started()
 		payload = {
 			"eciPath": eci_path,
-			"dataDirectory": os.path.join(os.path.dirname(eci_path)),
+			"dataDirectory": data_directory,
+			"dictionaryDirectory": dictionary_directory or "",
 			"language": language,
 			"languageId": langs.get(language, langs["enu"])[0],
 			"enableAbbreviationDict": config.conf.get("speech", {}).get("eci", {}).get("ABRDICT", False),
-			"enablePhrasePrediction": config.conf.get("speech", {}).get("eci", {}).get("phrasePrediction", False),
+			"enablePhrasePrediction": config.conf.get("speech", {})
+			.get("eci", {})
+			.get("phrasePrediction", False),
 			"voiceVariant": int(voice_conf.get("variant", 0) or 0),
 		}
 		response = _client.send_command("initialize", **payload)
@@ -573,6 +590,18 @@ def set_audio_quality(value):
 	_audio_quality = quality
 	if _client._host:
 		_client.initialize_audio()
+
+
+def set_dictionary_directory(directory, *, reload=False):
+	"""Immediately activate an isolated dictionary profile, or ECI's built-in behavior."""
+	if not _client._host:
+		return
+	_client.stop()
+	_client.send_command(
+		"setDictionaryDirectory",
+		directory=os.path.abspath(directory) if directory else "",
+		reload=bool(reload),
+	)
 
 
 def terminate():

@@ -27,7 +27,10 @@ class NativeProtocolTests(unittest.TestCase):
 			{"type": "command", "id": 7, "command": "addText", "payload": {"text": b"hello"}}
 		)
 		decoded = list(self.module.frames(self.writer.getvalue()))
-		self.assertEqual([frame[0] for frame in decoded], [self.module.HELLO, self.module.BEGIN_GENERATION, self.module.ADD_TEXT])
+		self.assertEqual(
+			[frame[0] for frame in decoded],
+			[self.module.HELLO, self.module.BEGIN_GENERATION, self.module.ADD_TEXT],
+		)
 		self.assertEqual(decoded[-1][2], struct.pack("<I", 5) + b"hello")
 
 	def test_initialize_encodes_language_and_configuration(self):
@@ -39,6 +42,7 @@ class NativeProtocolTests(unittest.TestCase):
 				"payload": {
 					"eciPath": r"C:\Eloquence\ECI.DLL",
 					"dataDirectory": r"C:\Eloquence",
+					"dictionaryDirectory": r"C:\Eloquence\dictionaries\alternative",
 					"language": "enu",
 					"languageId": 65536,
 					"enableAbbreviationDict": True,
@@ -52,6 +56,7 @@ class NativeProtocolTests(unittest.TestCase):
 		reader = self.module._PayloadReader(payload)
 		self.assertEqual(reader.string(), r"C:\Eloquence\ECI.DLL")
 		self.assertEqual(reader.string(), r"C:\Eloquence")
+		self.assertEqual(reader.string(), r"C:\Eloquence\dictionaries\alternative")
 		self.assertEqual(reader.string(), "enu")
 		self.assertEqual(reader.i32(), 65536)
 		self.assertEqual((reader.u8(), reader.u8(), reader.i32()), (1, 0, 3))
@@ -64,6 +69,19 @@ class NativeProtocolTests(unittest.TestCase):
 		kind, request_id, payload = list(self.module.frames(self.writer.getvalue()))[-1]
 		self.assertEqual((kind, request_id), (self.module.SET_AUDIO_QUALITY, 3))
 		self.assertEqual(payload, b"\x01")
+
+	def test_dictionary_directory_command_encodes_builtin_reload(self):
+		self.connection.send(
+			{
+				"type": "command",
+				"id": 4,
+				"command": "setDictionaryDirectory",
+				"payload": {"directory": "", "reload": True},
+			}
+		)
+		kind, request_id, payload = list(self.module.frames(self.writer.getvalue()))[-1]
+		self.assertEqual((kind, request_id), (self.module.SET_DICTIONARY_DIRECTORY, 4))
+		self.assertEqual(payload, struct.pack("<I", 0) + b"\x01")
 
 	def test_response_state_preserves_integer_parameter_keys(self):
 		payload = b"".join(

@@ -71,6 +71,7 @@ fn process_synthesizes_real_pcm_over_authenticated_stdio() {
     payload
         .put_string(&data_directory.display().to_string())
         .unwrap();
+    payload.put_string("").unwrap();
     payload.put_string("enu").unwrap();
     payload.put_i32(65_536);
     payload.put_u8(1);

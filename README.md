@@ -72,6 +72,24 @@ Enhanced mode is an optional tonal treatment, not additional source bandwidth.
 Changing the mode safely cancels current speech, resets the audio processor,
 and recreates NVDA's `WavePlayer` with the matching sample rate.
 
+## Pronunciation dictionaries
+
+The Eloquence settings panel offers four isolated pronunciation profiles:
+
+- **Built-in Eloquence pronunciations** disables custom dictionaries and
+  restores the engine's original behavior.
+- **Alternative dictionaries** downloads the smaller, conservative
+  AltIBMTTSDictionaries collection.
+- **Community dictionaries** downloads the more extensive IBMTTSDictionaries
+  collection.
+- **Existing custom dictionaries** preserves dictionary files migrated from
+  an earlier add-on installation when they are present.
+
+Downloaded profiles are stored separately and replace only their own previous
+snapshot when updated. Selecting **Download or update dictionary** activates
+the chosen profile immediately; switching profiles and pressing **Apply** or
+**OK** also takes effect without restarting NVDA.
+
 ## Traditional Chinese Script Conversion
 
 When the Mandarin Chinese voice is selected, text preprocessing converts

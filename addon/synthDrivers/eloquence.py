@@ -5,7 +5,6 @@ import gui
 import wx
 import ctypes
 import winsound
-import shutil  # Added for Copy Helper tool
 import hashlib
 import threading
 
@@ -65,9 +64,9 @@ from synthDriverHandler import (
 	synthDoneSpeaking,
 )
 from . import _eloquence
+from . import _eloquence_dictionaries
 from . import _eloquence_text
 from collections import OrderedDict
-import unicodedata
 import addonHandler
 
 addonHandler.initTranslation()
@@ -227,27 +226,41 @@ class EloquenceSettingsPanel(gui.settingsDialogs.SettingsPanel):
 	def makeSettings(self, settings):
 		try:
 			sHelper = gui.guiHelper.BoxSizerHelper(self, sizer=settings)
-
-			self.dictionarySources = {
-				"https://github.com/mohamed00/AltIBMTTSDictionaries": "Alternative IBM TTS Dictionaries",
-				"https://github.com/eigencrow/IBMTTSDictionaries": "IBM TTS Dictionaries",
-			}
+			data_directory = os.path.dirname(_eloquence.eciPath)
+			selected_profile = _eloquence_dictionaries.resolve_profile(
+				config.conf.get("eloquence", {}),
+				data_directory,
+				migrate=not globalVars.appArgs.secure,
+			)
+			self.dictionaryProfiles = [
+				_eloquence_dictionaries.BUILTIN_PROFILE,
+				_eloquence_dictionaries.ALTERNATIVE_PROFILE,
+				_eloquence_dictionaries.COMMUNITY_PROFILE,
+			]
+			if (
+				_eloquence_dictionaries.active_directory(
+					data_directory,
+					_eloquence_dictionaries.LEGACY_PROFILE,
+				)
+				or selected_profile == _eloquence_dictionaries.LEGACY_PROFILE
+			):
+				self.dictionaryProfiles.append(_eloquence_dictionaries.LEGACY_PROFILE)
+			profile_labels = self._dictionaryProfileLabels(data_directory)
 
 			self.dictionaryChoice = sHelper.addLabeledControl(
 				# Translators: Label of a combobox in the Eloquence category of the settings dialog
-				_("Dictionary:"),
+				_("Pronunciation dictionary:"),
 				wx.Choice,
-				choices=list(self.dictionarySources.values()),
+				choices=[profile_labels[profile] for profile in self.dictionaryProfiles],
 			)
-			self.dictionaryChoice.SetStringSelection(
-				config.conf.get("eloquence", {}).get("dictionary_name", "Alternative IBM TTS Dictionaries")
-			)
+			self.dictionaryChoice.SetSelection(self.dictionaryProfiles.index(selected_profile))
+			self.Bind(wx.EVT_CHOICE, self.onDictionaryChoice, self.dictionaryChoice)
 
-			self.updateButton = sHelper.addItem(wx.Button(self, label=_("Check for updates")))
+			# Translators: Downloads a fresh snapshot of the selected pronunciation dictionary.
+			self.updateButton = sHelper.addItem(wx.Button(self, label=_("Download or update dictionary")))
 			self.Bind(wx.EVT_BUTTON, self.onUpdate, self.updateButton)
 			# When NVDA is running in secure mode, one should not be able to save any setting to disk.
-			if globalVars.appArgs.secure:
-				self.updateButton.Disable()
+			self._updateDictionaryButtonState()
 
 			# Copy the native host because NVDA excludes executables from its normal secure-screen copy.
 			self.copyHelperButton = sHelper.addItem(
@@ -510,27 +523,92 @@ class EloquenceSettingsPanel(gui.settingsDialogs.SettingsPanel):
 				wx.OK | wx.ICON_ERROR,
 			)
 
-	def onSave(self):
+	def _selectedDictionaryProfile(self):
+		selection = self.dictionaryChoice.GetSelection()
+		if selection < 0 or selection >= len(self.dictionaryProfiles):
+			return _eloquence_dictionaries.BUILTIN_PROFILE
+		return self.dictionaryProfiles[selection]
+
+	def _dictionaryProfileLabels(self, data_directory=None):
+		if data_directory is None:
+			data_directory = os.path.dirname(_eloquence.eciPath)
+		profile_labels = {
+			# Translators: Eloquence's original pronunciation with no downloaded or custom dictionary.
+			_eloquence_dictionaries.BUILTIN_PROFILE: _(
+				"Built-in Eloquence pronunciations (no custom dictionary)"
+			),
+			# Translators: A small, conservative community pronunciation dictionary.
+			_eloquence_dictionaries.ALTERNATIVE_PROFILE: _("Alternative dictionaries (minimal)"),
+			# Translators: A large community pronunciation dictionary.
+			_eloquence_dictionaries.COMMUNITY_PROFILE: _("Community dictionaries (extensive)"),
+			# Translators: Dictionary files retained from an older version of the add-on.
+			_eloquence_dictionaries.LEGACY_PROFILE: _("Existing custom dictionaries"),
+		}
+		if not _eloquence_dictionaries.active_directory(
+			data_directory,
+			_eloquence_dictionaries.ALTERNATIVE_PROFILE,
+		):
+			# Translators: The small dictionary profile is available but has not been downloaded yet.
+			profile_labels[_eloquence_dictionaries.ALTERNATIVE_PROFILE] = _(
+				"Alternative dictionaries (minimal; not downloaded)"
+			)
+		if not _eloquence_dictionaries.active_directory(
+			data_directory,
+			_eloquence_dictionaries.COMMUNITY_PROFILE,
+		):
+			# Translators: The large dictionary profile is available but has not been downloaded yet.
+			profile_labels[_eloquence_dictionaries.COMMUNITY_PROFILE] = _(
+				"Community dictionaries (extensive; not downloaded)"
+			)
+		return profile_labels
+
+	def _refreshDictionaryChoiceLabels(self):
+		selected_profile = self._selectedDictionaryProfile()
+		profile_labels = self._dictionaryProfileLabels()
+		self.dictionaryChoice.SetItems(
+			[profile_labels[profile] for profile in self.dictionaryProfiles]
+		)
+		self.dictionaryChoice.SetSelection(self.dictionaryProfiles.index(selected_profile))
+
+	def _updateDictionaryButtonState(self):
+		can_update = (
+			not globalVars.appArgs.secure
+			and self._selectedDictionaryProfile() in _eloquence_dictionaries.PROVIDERS
+		)
+		self.updateButton.Enable(can_update)
+
+	def onDictionaryChoice(self, evt):
+		self._updateDictionaryButtonState()
+		evt.Skip()
+
+	def _activateDictionaryProfile(self, profile, *, reload=False):
+		data_directory = os.path.dirname(_eloquence.eciPath)
+		directory = _eloquence_dictionaries.active_directory(data_directory, profile)
+		_eloquence.set_dictionary_directory(directory, reload=reload)
+
+	def _storeSelectedDictionaryProfile(self):
 		if "eloquence" not in config.conf:
 			config.conf["eloquence"] = {}
-		selection = self.dictionaryChoice.GetStringSelection()
-		for url, name in self.dictionarySources.items():
-			if name == selection:
-				config.conf["eloquence"]["dictionary_name"] = name
-				config.conf["eloquence"]["dictionary_url"] = url
-				break
+		profile = self._selectedDictionaryProfile()
+		config.conf["eloquence"]["dictionary_profile"] = profile
+		# NVDA exposes this as an AggregatedSection. It supports assigning the
+		# new stable profile ID, but deliberately does not implement key deletion.
+		# Obsolete source/name keys are harmless and may remain in older configs.
+		return profile
+
+	def onSave(self):
+		profile = self._storeSelectedDictionaryProfile()
+		try:
+			self._activateDictionaryProfile(profile)
+		except Exception:
+			log.exception("Could not activate Eloquence dictionary profile %s", profile)
 
 	def onUpdate(self, evt):
-		import urllib.request
-		import zipfile
-		import os
-
-		self.onSave()
-		dictionary_url = config.conf.get("eloquence", {}).get("dictionary_url")
-		if not dictionary_url:
+		profile = self._selectedDictionaryProfile()
+		if profile not in _eloquence_dictionaries.PROVIDERS:
 			wx.MessageBox(
-				# Translators: Text of a message dialog when updating a dictionary
-				_("Please select a dictionary first."),
+				# Translators: The built-in and retained custom dictionary choices cannot be downloaded.
+				_("Select a downloadable dictionary first."),
 				# Translators: Title of a message dialog when updating a dictionary
 				_("Error"),
 				wx.OK | wx.ICON_ERROR,
@@ -538,231 +616,31 @@ class EloquenceSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			return
 
 		try:
-			# Add /archive/master.zip to the end of the URL to download the master branch
-			zip_url = dictionary_url + "/archive/master.zip"
-			zip_path, _unused = urllib.request.urlretrieve(zip_url)
-
-			addon_dir = os.path.abspath(os.path.dirname(__file__))
-			dest_folder = os.path.join(addon_dir, "eloquence")
-
-			if not os.path.exists(dest_folder):
-				os.makedirs(dest_folder)
-
-			with zipfile.ZipFile(zip_path, "r") as zip_ref:
-				zip_ref.extractall(addon_dir)
-				zip_contents = zip_ref.namelist()
-				extracted_root_name = zip_contents[0].split("/")[0]
-				extracted_folder_path = os.path.join(addon_dir, extracted_root_name)
-
-			updates_count = 0
-
-			# --- HELPER: Ensure CP1252 compatibility ---
-			def clean_key_text(text):
-				try:
-					text.encode("cp1252")
-					return text
-				except UnicodeEncodeError:
-					# If not CP1252, fallback to stripping accents
-					return "".join(
-						c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
-					)
-
-			# --- HELPER: Extract Key/Word only (Cleaned) ---
-			def get_key(line):
-				parts = line.strip().split(None, 1)
-				if parts:
-					raw_key = parts[0].lower()
-					return clean_key_text(raw_key)  # Return CP1252-safe key
-				return None
-
-			# --- HELPER: Normalize Format (Space to Tab + Clean ALL text) ---
-			def normalize_entry_format(line):
-				line = line.strip()
-				if " [" in line and "\t[" not in line:
-					parts = line.split(" [", 1)
-					if len(parts) == 2:
-						word_part = parts[0].strip()
-						pronunciation_part = parts[1]
-						# Clean BOTH the word and pronunciation to ensure CP1252 compatibility
-						clean_word = clean_key_text(word_part)
-						clean_pronunciation = clean_key_text(pronunciation_part)
-						return f"{clean_word}\t[{clean_pronunciation}"
-
-				# Even if it's already tabbed, ensure ALL text is CP1252-safe
-				if "\t[" in line:
-					parts = line.split("\t[", 1)
-					if len(parts) == 2:
-						word_part = parts[0].strip()
-						pronunciation_part = parts[1]
-						# Clean BOTH parts
-						clean_word = clean_key_text(word_part)
-						clean_pronunciation = clean_key_text(pronunciation_part)
-						return f"{clean_word}\t[{clean_pronunciation}"
-
-				# If no bracket format, just clean the whole line
-				return clean_key_text(line)
-
-			# --- MAIN LOGIC ---
-			if os.path.exists(extracted_folder_path):
-				candidates = []
-				for root, dirs, files in os.walk(extracted_folder_path):
-					for f in files:
-						if f.lower().endswith(".dic"):
-							full_path = os.path.join(root, f)
-							candidates.append((full_path, f))
-
-				processed_filenames = set()
-				encodings_to_try = ["utf-8", "cp1252", "iso-8859-1", "cp437"]
-
-				for source_path, filename in candidates:
-					dest_path = os.path.join(dest_folder, filename)
-
-					# Auto-create new dictionary files with CP1252-safe content
-					if not os.path.exists(dest_path):
-						try:
-							# Read source file with encoding detection
-							source_lines = []
-							read_success = False
-							for enc in encodings_to_try:
-								try:
-									with open(source_path, "r", encoding=enc) as f:
-										source_lines = f.readlines()
-										read_success = True
-										break
-								except UnicodeDecodeError:
-									continue
-
-							if not read_success:
-								with open(source_path, "r", encoding="iso-8859-1", errors="replace") as f:
-									source_lines = f.readlines()
-
-							# Process and strip accents from all lines
-							processed_lines = []
-							for line in source_lines:
-								normalized_line = normalize_entry_format(line)
-								if normalized_line.strip():  # Skip empty lines
-									processed_lines.append(normalized_line)
-
-							# Write as CP1252
-							with open(dest_path, "w", encoding="cp1252") as f:
-								for line in processed_lines:
-									f.write(f"{line}\n")
-
-							updates_count += len(processed_lines)
-							log.info(
-								f"Created new dictionary file: {filename} ({len(processed_lines)} entries, CP1252-safe)"
-							)
-						except Exception as e:
-							log.error(f"Failed to create new dictionary {filename}: {e}")
-						continue
-
-					if filename.lower() in processed_filenames:
-						continue
-					processed_filenames.add(filename.lower())
-
-					lines_to_append = []
-					try:
-						# 1. READ LOCAL: Extract CLEAN KEYS
-						existing_keys = set()
-
-						def load_local_keys(f_handle):
-							for line in f_handle:
-								key = get_key(line)
-								if key:
-									existing_keys.add(key)
-
-						try:
-							# Try CP1252 first as it is the standard for dictionaries
-							with open(dest_path, "r", encoding="cp1252") as f:
-								load_local_keys(f)
-						except UnicodeDecodeError:
-							# Fallback if it was previously written in a different encoding
-							try:
-								with open(dest_path, "r", encoding="utf-8") as f:
-									load_local_keys(f)
-							except UnicodeDecodeError:
-								with open(dest_path, "r", encoding="mbcs", errors="ignore") as f:
-									load_local_keys(f)
-
-						# 2. READ SOURCE WITH AUTO-DETECT
-						source_lines = []
-						read_success = False
-						for enc in encodings_to_try:
-							try:
-								with open(source_path, "r", encoding=enc) as f:
-									source_lines = f.readlines()
-									read_success = True
-									break
-							except UnicodeDecodeError:
-								continue
-
-						if not read_success:
-							with open(source_path, "r", encoding="iso-8859-1", errors="replace") as f:
-								source_lines = f.readlines()
-
-						# 3. FILTER, CLEAN, & FORMAT
-						for line in source_lines:
-							# This cleans the visual word and normalizes spaces while preserving CP1252 accents
-							normalized_line = normalize_entry_format(line)
-
-							# Extract the clean key for comparison
-							key = get_key(normalized_line)
-
-							if not key:
-								continue
-
-							# Check duplicates using the key
-							if key not in existing_keys:
-								lines_to_append.append(normalized_line)
-								existing_keys.add(key)
-
-						# 4. WRITE UPDATES (Strictly CP1252)
-						if lines_to_append:
-							with open(dest_path, "a", encoding="cp1252") as f:
-								for item in lines_to_append:
-									f.write(f"{item}\n")
-							updates_count += len(lines_to_append)
-
-					except Exception as e:
-						log.error(f"Failed to merge dictionary {filename}: {e}")
-
-				shutil.rmtree(extracted_folder_path)
-
-			os.remove(zip_path)
-
-			if updates_count > 0:
-				# Count how many were new files vs updated entries
-				new_files = sum(1 for f in os.listdir(dest_folder) if f.lower().endswith(".dic"))
-				wx.MessageBox(
-					_(
-						# Translators: Text of a message dialog when updating a dictionary
-						"Dictionary update successful!\n\n"
-						"• Total updates: {updates_count}\n"
-						"• Dictionary files: {new_files}\n\n"
-						"Note: CP1252 encoding enforced; some accents may have been stripped for compatibility."
-					).format(updates_count=updates_count, new_files=new_files),
-					# Translators: Title of a message dialog when updating a dictionary
-					_("Success"),
-					wx.OK | wx.ICON_INFORMATION,
-				)
-			else:
-				wx.MessageBox(
-					# Translators: Text of a message dialog when updating a dictionary
-					_("No new updates found. Your dictionaries are already up to date."),
-					# Translators: Title of a message dialog when updating a dictionary
-					_("Eloquence"),
-					wx.OK | wx.ICON_INFORMATION,
-				)
-
-		except Exception as e:
+			self._storeSelectedDictionaryProfile()
+			data_directory = os.path.dirname(_eloquence.eciPath)
+			result = _eloquence_dictionaries.update_profile(data_directory, profile)
+			self._activateDictionaryProfile(profile, reload=True)
+			self._refreshDictionaryChoiceLabels()
+			wx.MessageBox(
+				_(
+					# Translators: Reports the size of a newly downloaded pronunciation dictionary snapshot.
+					"Dictionary update successful.\n\n"
+					"Dictionary files: {files}\n"
+					"Pronunciation entries: {entries}"
+				).format(**result),
+				# Translators: Title of a message dialog when updating a dictionary
+				_("Success"),
+				wx.OK | wx.ICON_INFORMATION,
+			)
+		except Exception as error:
+			log.exception("Failed to update Eloquence dictionary profile %s", profile)
 			wx.MessageBox(
 				# Translators: Text of a message dialog when updating a dictionary
-				_("An error occurred while updating the dictionary: {e}").format(e=e),
+				_("An error occurred while updating the dictionary: {error}").format(error=error),
 				# Translators: Title of a message dialog when updating a dictionary
 				_("Error"),
 				wx.OK | wx.ICON_ERROR,
 			)
-		pass
 
 
 class SynthDriver(synthDriverHandler.SynthDriver):

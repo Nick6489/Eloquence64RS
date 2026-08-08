@@ -206,10 +206,40 @@ class InstallTasksTests(unittest.TestCase):
 				install_tasks = importlib.import_module("addon.installTasks")
 				install_tasks.onInstall()
 
-			with open(os.path.join(pending_data, "enumain.dic"), encoding="cp1252") as dictionary:
+			self.assertFalse(os.path.exists(os.path.join(pending_data, "enumain.dic")))
+			with open(
+				os.path.join(pending_data, "dictionaries", "legacy", "enumain.dic"),
+				encoding="cp1252",
+			) as dictionary:
 				self.assertEqual(dictionary.read(), "user dictionary")
 			self.assertFalse(os.path.exists(os.path.join(pending_data, "ECI.INI")))
 			self.assertFalse(os.path.exists(os.path.join(pending_data, "ENU.SYN")))
+
+	def test_on_install_preserves_isolated_dictionary_profiles_recursively(self):
+		with tempfile.TemporaryDirectory() as root:
+			installed = os.path.join(root, "Eloquence")
+			pending = os.path.join(root, "Eloquence.pendingInstall")
+			installed_data = os.path.join(installed, "synthDrivers", "eloquence")
+			pending_data = os.path.join(pending, "synthDrivers", "eloquence")
+			profile = os.path.join(installed_data, "dictionaries", "community")
+			os.makedirs(profile)
+			os.makedirs(pending_data)
+			with open(os.path.join(profile, "enumain.dic"), "w", encoding="cp1252") as dictionary:
+				dictionary.write("community snapshot")
+
+			addon = types.SimpleNamespace(path=pending, installPath=installed)
+			with _ModuleStubs(
+				addonHandler=types.SimpleNamespace(getCodeAddon=lambda: addon),
+				logHandler=types.SimpleNamespace(log=_FakeLog()),
+			):
+				sys.modules.pop("addon.installTasks", None)
+				importlib.import_module("addon.installTasks").onInstall()
+
+			with open(
+				os.path.join(pending_data, "dictionaries", "community", "enumain.dic"),
+				encoding="cp1252",
+			) as dictionary:
+				self.assertEqual(dictionary.read(), "community snapshot")
 
 	def test_on_install_ignores_first_install_without_existing_addon(self):
 		with tempfile.TemporaryDirectory() as root:

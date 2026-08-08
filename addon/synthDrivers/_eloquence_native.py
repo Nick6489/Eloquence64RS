@@ -7,7 +7,7 @@ import threading
 from typing import BinaryIO, Dict, Iterable, Tuple
 
 MAGIC = b"ELQH"
-VERSION = 1
+VERSION = 2
 HEADER = struct.Struct("<4sHHIII")
 MAX_PAYLOAD = 4 * 1024 * 1024
 AUTH_KEY_BYTES = 16
@@ -24,6 +24,7 @@ SET_PARAM = 0x0020
 SET_VOICE_PARAM = 0x0021
 COPY_VOICE = 0x0022
 SET_AUDIO_QUALITY = 0x0023
+SET_DICTIONARY_DIRECTORY = 0x0024
 HELLO_ACK = 0x8001
 RESPONSE = 0x8002
 ERROR_RESPONSE = 0x8003
@@ -187,6 +188,7 @@ class NativeHostConnection:
 				(
 					_string(payload["eciPath"]),
 					_string(payload["dataDirectory"]),
+					_string(payload.get("dictionaryDirectory", "")),
 					_string(payload["language"]),
 					struct.pack("<i", int(payload["languageId"])),
 					struct.pack("<B", bool(payload.get("enableAbbreviationDict", False))),
@@ -212,6 +214,13 @@ class NativeHostConnection:
 			return COPY_VOICE, struct.pack("<i", int(payload["variant"]))
 		if command == "setAudioQuality":
 			return SET_AUDIO_QUALITY, struct.pack("<B", bool(payload["enhanced"]))
+		if command == "setDictionaryDirectory":
+			return SET_DICTIONARY_DIRECTORY, b"".join(
+				(
+					_string(payload.get("directory", "")),
+					struct.pack("<B", bool(payload.get("reload", False))),
+				)
+			)
 		raise NativeHostProtocolError(f"unsupported native host command: {command}")
 
 	def _decode_event(self, kind: int, payload: bytes):

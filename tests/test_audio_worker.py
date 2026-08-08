@@ -15,11 +15,14 @@ def _load_client_module():
 	nvwave_module.WavePlayer = object
 	build_version_module = types.ModuleType("buildVersion")
 	build_version_module.version_year = 2026
+	global_vars_module = types.ModuleType("globalVars")
+	global_vars_module.appArgs = types.SimpleNamespace(secure=False)
 
 	stubs = {
 		"config": config_module,
 		"nvwave": nvwave_module,
 		"buildVersion": build_version_module,
+		"globalVars": global_vars_module,
 	}
 	previous = {name: sys.modules.get(name) for name in stubs}
 	sys.modules.update(stubs)
@@ -83,6 +86,7 @@ class AudioWorkerTests(unittest.TestCase):
 			client.send_command.call_args_list[1],
 			unittest.mock.call("setAudioQuality", enhanced=True),
 		)
+		self.assertEqual(client.send_command.call_args_list[0].kwargs["dictionaryDirectory"], "")
 		module._ensure_synth_worker.assert_called_once_with()
 
 	def test_enhanced_mode_constructs_22_khz_wave_player(self):
@@ -136,6 +140,26 @@ class AudioWorkerTests(unittest.TestCase):
 
 		self.assertEqual(module.get_audio_quality(), "standard")
 		client.send_command.assert_not_called()
+
+	def test_builtin_dictionary_switch_stops_speech_and_sends_empty_directory(self):
+		module = _load_client_module()
+		client = Mock()
+		client._host = object()
+		module._client = client
+
+		module.set_dictionary_directory(None, reload=True)
+
+		self.assertEqual(
+			client.method_calls,
+			[
+				unittest.mock.call.stop(),
+				unittest.mock.call.send_command(
+					"setDictionaryDirectory",
+					directory="",
+					reload=True,
+				),
+			],
+		)
 
 	def test_empty_index_marker_queues_non_blocking_playback_callback(self):
 		module = _load_client_module()

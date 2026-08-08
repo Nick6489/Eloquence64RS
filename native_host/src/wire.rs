@@ -9,6 +9,7 @@ use crate::protocol::{
 pub struct InitializeConfig {
     pub eci_path: String,
     pub data_directory: String,
+    pub dictionary_directory: String,
     pub language_code: String,
     pub language_id: i32,
     pub enable_abbreviation_dictionary: bool,
@@ -30,6 +31,7 @@ pub enum ClientCommand {
     SetVoiceParam { parameter: i32, value: i32 },
     CopyVoice(i32),
     SetAudioQuality(bool),
+    SetDictionaryDirectory { directory: String, reload: bool },
 }
 
 impl ClientCommand {
@@ -46,6 +48,7 @@ impl ClientCommand {
             MessageKind::Initialize => Self::Initialize(InitializeConfig {
                 eci_path: payload.get_string()?.to_owned(),
                 data_directory: payload.get_string()?.to_owned(),
+                dictionary_directory: payload.get_string()?.to_owned(),
                 language_code: payload.get_string()?.to_owned(),
                 language_id: payload.get_i32()?,
                 enable_abbreviation_dictionary: payload.get_u8()? != 0,
@@ -68,6 +71,10 @@ impl ClientCommand {
             },
             MessageKind::CopyVoice => Self::CopyVoice(payload.get_i32()?),
             MessageKind::SetAudioQuality => Self::SetAudioQuality(payload.get_u8()? != 0),
+            MessageKind::SetDictionaryDirectory => Self::SetDictionaryDirectory {
+                directory: payload.get_string()?.to_owned(),
+                reload: payload.get_u8()? != 0,
+            },
             kind => return Err(ProtocolError::UnexpectedMessageKind(kind as u16)),
         };
         payload.finish()?;
@@ -143,6 +150,9 @@ mod tests {
         let mut payload = PayloadWriter::new();
         payload.put_string(r"C:\Eloquence\ECI.DLL").unwrap();
         payload.put_string(r"C:\Eloquence").unwrap();
+        payload
+            .put_string(r"C:\Eloquence\dictionaries\alternative")
+            .unwrap();
         payload.put_string("enu").unwrap();
         payload.put_i32(65_536);
         payload.put_u8(1);
@@ -155,6 +165,7 @@ mod tests {
             ClientCommand::Initialize(InitializeConfig {
                 eci_path: r"C:\Eloquence\ECI.DLL".to_owned(),
                 data_directory: r"C:\Eloquence".to_owned(),
+                dictionary_directory: r"C:\Eloquence\dictionaries\alternative".to_owned(),
                 language_code: "enu".to_owned(),
                 language_id: 65_536,
                 enable_abbreviation_dictionary: true,
@@ -170,6 +181,21 @@ mod tests {
         assert_eq!(
             ClientCommand::decode(&frame).unwrap(),
             ClientCommand::SetAudioQuality(true)
+        );
+    }
+
+    #[test]
+    fn dictionary_directory_payload_decodes_builtin_and_reload_state() {
+        let mut payload = PayloadWriter::new();
+        payload.put_string("").unwrap();
+        payload.put_u8(1);
+        let frame = Frame::new(MessageKind::SetDictionaryDirectory, 10, payload.finish());
+        assert_eq!(
+            ClientCommand::decode(&frame).unwrap(),
+            ClientCommand::SetDictionaryDirectory {
+                directory: String::new(),
+                reload: true,
+            }
         );
     }
 

@@ -108,6 +108,38 @@ class _SpeechQueue:
 		self.items.append(item)
 
 
+class _AggregatedConfigSection:
+	"""NVDA configuration view: readable/writable, but keys cannot be deleted."""
+
+	def __init__(self, values=None):
+		self.values = dict(values or {})
+
+	def __getitem__(self, key):
+		return self.values[key]
+
+	def __setitem__(self, key, value):
+		self.values[key] = value
+
+	def get(self, key, default=None):
+		return self.values.get(key, default)
+
+
+class _Choice:
+	def __init__(self, items, selection):
+		self.items = list(items)
+		self.selection = selection
+
+	def GetSelection(self):
+		return self.selection
+
+	def SetItems(self, items):
+		self.items = list(items)
+		self.selection = -1
+
+	def SetSelection(self, selection):
+		self.selection = selection
+
+
 class _EloquenceStub(types.ModuleType):
 	def __init__(self):
 		super().__init__("addon.synthDrivers._eloquence")
@@ -216,6 +248,8 @@ def _install_nvda_stubs():
 	wx = types.ModuleType("wx")
 	wx.OK = 1
 	wx.ICON_WARNING = 2
+	wx.ICON_INFORMATION = 4
+	wx.ICON_ERROR = 8
 	wx.CallAfter = mock.Mock(side_effect=lambda func, *args, **kwargs: func(*args, **kwargs))
 	wx.CallLater = mock.Mock(side_effect=lambda _delay, func, *args, **kwargs: func(*args, **kwargs))
 	sys.modules["wx"] = wx
@@ -278,6 +312,69 @@ def _queued_text(calls, eloquence_stub):
 
 
 class LanguageScopeTests(unittest.TestCase):
+	def test_dictionary_download_refreshes_choice_label_without_reopening_settings(self):
+		module, eloquence_stub, _preprocess_calls = _load_driver()
+		module.wx.MessageBox = mock.Mock()
+		eloquence_stub.set_dictionary_directory = mock.Mock()
+		panel = module.EloquenceSettingsPanel.__new__(module.EloquenceSettingsPanel)
+		panel.dictionaryProfiles = [
+			module._eloquence_dictionaries.BUILTIN_PROFILE,
+			module._eloquence_dictionaries.ALTERNATIVE_PROFILE,
+			module._eloquence_dictionaries.COMMUNITY_PROFILE,
+		]
+		panel.dictionaryChoice = _Choice(
+			[
+				"Built-in Eloquence pronunciations (no custom dictionary)",
+				"Alternative dictionaries (minimal; not downloaded)",
+				"Community dictionaries (extensive; not downloaded)",
+			],
+			selection=1,
+		)
+		module.config.conf = {"eloquence": {}}
+		alternative = module._eloquence_dictionaries.ALTERNATIVE_PROFILE
+
+		with (
+			mock.patch.object(
+				module._eloquence_dictionaries,
+				"update_profile",
+				return_value={"files": 1, "entries": 2},
+			),
+			mock.patch.object(
+				module._eloquence_dictionaries,
+				"active_directory",
+				side_effect=lambda _data_directory, profile: (
+					r"C:\dictionaries\alternative" if profile == alternative else None
+				),
+			),
+		):
+			panel.onUpdate(None)
+
+		self.assertEqual(panel.dictionaryChoice.selection, 1)
+		self.assertEqual(panel.dictionaryChoice.items[1], "Alternative dictionaries (minimal)")
+		self.assertEqual(
+			panel.dictionaryChoice.items[2],
+			"Community dictionaries (extensive; not downloaded)",
+		)
+
+	def test_dictionary_profile_save_supports_nvda_aggregated_config_section(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		section = _AggregatedConfigSection(
+			{
+				"dictionary_name": "Alternative IBM TTS Dictionaries",
+				"dictionary_url": "https://example.invalid/old-source",
+			}
+		)
+		module.config.conf = {"eloquence": section}
+		panel = module.EloquenceSettingsPanel.__new__(module.EloquenceSettingsPanel)
+		panel.dictionaryProfiles = [module._eloquence_dictionaries.BUILTIN_PROFILE]
+		panel.dictionaryChoice = types.SimpleNamespace(GetSelection=lambda: 0)
+
+		profile = panel._storeSelectedDictionaryProfile()
+
+		self.assertEqual(profile, module._eloquence_dictionaries.BUILTIN_PROFILE)
+		self.assertEqual(section["dictionary_profile"], profile)
+		self.assertIn("dictionary_name", section.values)
+
 	def test_audio_quality_setting_exposes_standard_and_enhanced_modes(self):
 		module, _eloquence_stub, _preprocess_calls = _load_driver()
 		driver = _new_driver(module)

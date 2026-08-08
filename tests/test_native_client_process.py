@@ -17,7 +17,7 @@ def load_module():
 
 
 class NativeClientProcessTests(unittest.TestCase):
-	def test_legacy_client_messages_drive_real_native_host(self):
+	def test_python_client_drives_real_native_host_and_builtin_dictionary_mode(self):
 		host = ROOT / "native_host" / "target" / "i686-pc-windows-msvc" / "debug" / "eloquence_host32.exe"
 		eci = Path(os.environ.get("ELOQUENCE_ECI_PATH", ROOT / "addon" / "synthDrivers" / "eloquence" / "ECI.DLL"))
 		if not host.is_file() or not eci.is_file():
@@ -43,6 +43,7 @@ class NativeClientProcessTests(unittest.TestCase):
 					"payload": {
 						"eciPath": str(eci),
 						"dataDirectory": str(eci.parent),
+						"dictionaryDirectory": "",
 						"language": "enu",
 						"languageId": 65536,
 						"enableAbbreviationDict": True,
@@ -54,12 +55,21 @@ class NativeClientProcessTests(unittest.TestCase):
 			response = connection.recv()
 			self.assertEqual(response["id"], 2)
 			self.assertIn(6, response["payload"]["voiceParams"])
+			connection.send(
+				{
+					"type": "command",
+					"id": 3,
+					"command": "setDictionaryDirectory",
+					"payload": {"directory": "", "reload": True},
+				}
+			)
+			self.assertEqual(connection.recv()["id"], 3)
 
 			commands = [
-				(3, "addText", {"text": b"Python native client integration test."}),
-				(4, "insertIndex", {"value": 42}),
-				(5, "insertIndex", {"value": 0xFFFF}),
-				(6, "synthesize", {}),
+				(4, "addText", {"text": b"Python native client integration test."}),
+				(5, "insertIndex", {"value": 42}),
+				(6, "insertIndex", {"value": 0xFFFF}),
+				(7, "synthesize", {}),
 			]
 			for request_id, command, payload in commands:
 				connection.send(
@@ -78,7 +88,7 @@ class NativeClientProcessTests(unittest.TestCase):
 			while not saw_done or not saw_synthesize_response:
 				message = connection.recv()
 				if message["type"] == "response":
-					saw_synthesize_response |= message["id"] == 6
+					saw_synthesize_response |= message["id"] == 7
 				elif message["event"] == "audio":
 					payload = message["payload"]
 					saw_audio |= bool(payload.get("data"))
@@ -87,8 +97,8 @@ class NativeClientProcessTests(unittest.TestCase):
 			self.assertTrue(saw_audio)
 			self.assertTrue(saw_index)
 
-			connection.send({"type": "command", "id": 7, "command": "delete", "payload": {}})
-			while connection.recv().get("id") != 7:
+			connection.send({"type": "command", "id": 8, "command": "delete", "payload": {}})
+			while connection.recv().get("id") != 8:
 				pass
 		finally:
 			connection.close()

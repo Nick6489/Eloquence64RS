@@ -10,7 +10,7 @@ use std::error::Error;
 use std::ffi::c_void;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
@@ -254,7 +254,13 @@ pub struct EciEngine {
     handle: EciHandle,
     callback_context: Box<CallbackContext>,
     stop_state: Arc<StopState>,
-    dictionary_handles: HashMap<String, EciDictionaryHandle>,
+    dictionary_handles: HashMap<DictionaryKey, EciDictionaryHandle>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct DictionaryKey {
+    language_code: String,
+    directory: PathBuf,
 }
 
 impl EciEngine {
@@ -428,13 +434,30 @@ impl EciEngine {
         unsafe { (self.api.copy_voice)(self.handle, variant, 0) }
     }
 
-    pub fn load_dictionaries(
+    pub fn activate_dictionaries(
         &mut self,
         language_code: &str,
-        data_directory: &Path,
+        dictionary_directory: Option<&Path>,
+        reload: bool,
     ) -> Result<(), EngineError> {
+        let Some(dictionary_directory) = dictionary_directory else {
+            return self.set_dictionary(std::ptr::null_mut());
+        };
         let language_code = language_code.to_ascii_lowercase();
-        if let Some(&dictionary) = self.dictionary_handles.get(&language_code) {
+        let key = DictionaryKey {
+            language_code,
+            directory: dictionary_directory.to_owned(),
+        };
+        if reload {
+            if let Some(dictionary) = self.dictionary_handles.remove(&key) {
+                // eciDeleteDict deactivates dynamic lookups, so do this before
+                // creating and activating the replacement snapshot.
+                unsafe {
+                    (self.api.delete_dictionary)(self.handle, dictionary);
+                }
+            }
+        }
+        if let Some(&dictionary) = self.dictionary_handles.get(&key) {
             return self.set_dictionary(dictionary);
         }
 
@@ -442,15 +465,20 @@ impl EciEngine {
         if dictionary.is_null() {
             return Err(EngineError::CreateDictionaryFailed);
         }
-        let result = self.populate_dictionary(dictionary, &language_code, data_directory);
+        let result = self.populate_dictionary(dictionary, &key.language_code, dictionary_directory);
         if let Err(error) = result {
             unsafe {
                 (self.api.delete_dictionary)(self.handle, dictionary);
             }
             return Err(error);
         }
-        self.set_dictionary(dictionary)?;
-        self.dictionary_handles.insert(language_code, dictionary);
+        if let Err(error) = self.set_dictionary(dictionary) {
+            unsafe {
+                (self.api.delete_dictionary)(self.handle, dictionary);
+            }
+            return Err(error);
+        }
+        self.dictionary_handles.insert(key, dictionary);
         Ok(())
     }
 
