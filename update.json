@@ -1,5 +1,5 @@
 {
-  "version": "19.1-RS",
-  "download_url": "https://github.com/Nick6489/Eloquence64RS/releases/download/v19.1-RS/Eloquence-v19.1-RS.nvda-addon",
-  "changelog": "Eloquence64RS 19.1 adds optional Enhanced 22 kHz audio and fully reworked pronunciation dictionary profiles. Users can switch back to Eloquence's built-in pronunciations, download isolated alternative or community dictionaries, preserve older custom dictionaries, and activate changes immediately."
+  "version": "19.1.1-RS",
+  "download_url": "https://github.com/Nick6489/Eloquence64RS/releases/download/v19.1.1-RS/Eloquence-v19.1.1-RS.nvda-addon",
+  "changelog": "Eloquence64RS 19.1.1 is a stable hotfix that makes pronunciation dictionary selection follow NVDA configuration profile changes immediately."
 }

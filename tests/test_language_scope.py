@@ -65,6 +65,21 @@ class _Notification:
 		self.calls.append(kwargs)
 
 
+class _Action:
+	def __init__(self):
+		self.handlers = []
+
+	def register(self, handler):
+		self.handlers.append(handler)
+
+	def unregister(self, handler):
+		self.handlers.remove(handler)
+
+	def notify(self, **kwargs):
+		for handler in tuple(self.handlers):
+			handler(**kwargs)
+
+
 class _SynthBase:
 	@staticmethod
 	def VoiceSetting():
@@ -254,7 +269,11 @@ def _install_nvda_stubs():
 	wx.CallLater = mock.Mock(side_effect=lambda _delay, func, *args, **kwargs: func(*args, **kwargs))
 	sys.modules["wx"] = wx
 	sys.modules["winsound"] = types.ModuleType("winsound")
-	sys.modules["config"] = types.SimpleNamespace(conf={}, save=lambda: None)
+	sys.modules["config"] = types.SimpleNamespace(
+		conf={},
+		post_configProfileSwitch=_Action(),
+		save=lambda: None,
+	)
 	sys.modules["core"] = types.SimpleNamespace(postNvdaStartup=types.SimpleNamespace(register=mock.Mock()))
 	sys.modules["globalVars"] = types.SimpleNamespace(appArgs=types.SimpleNamespace(secure=False))
 	sys.modules["addonHandler"] = types.SimpleNamespace(initTranslation=lambda: None)
@@ -287,6 +306,7 @@ def _new_driver(module):
 	driver._backquoteVoiceTags = False
 	driver._ABRDICT = False
 	driver._phrasePrediction = False
+	driver._configProfileSwitchHandler = None
 	driver.rate = 50
 	return driver
 
@@ -491,6 +511,32 @@ class LanguageScopeTests(unittest.TestCase):
 
 		self.assertTrue(eloquence_stub.terminated)
 		self.assertTrue(driver.base_terminated)
+
+	def test_configuration_profile_switch_activates_its_dictionary(self):
+		module, eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		module.config.conf = {"eloquence": {"dictionary_profile": "community"}}
+		eloquence_stub.set_dictionary_directory = mock.Mock()
+
+		with mock.patch.object(
+			module._eloquence_dictionaries,
+			"active_directory",
+			return_value=r"C:\dictionaries\community",
+		) as active_directory:
+			driver._onConfigProfileSwitch(prevConf={})
+
+		active_directory.assert_called_once_with("C:\\", "community")
+		eloquence_stub.set_dictionary_directory.assert_called_once_with(r"C:\dictionaries\community")
+
+	def test_driver_terminate_unregisters_configuration_profile_listener(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		driver._configProfileSwitchHandler = driver._onConfigProfileSwitch
+		module.config.post_configProfileSwitch.register(driver._configProfileSwitchHandler)
+
+		driver.terminate()
+
+		self.assertEqual(module.config.post_configProfileSwitch.handlers, [])
 
 	def test_english_document_language_does_not_replace_default_voice(self):
 		module, eloquence_stub, preprocess_calls = _load_driver()

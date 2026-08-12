@@ -709,6 +709,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			return False
 
 	def __init__(self):
+		self._configProfileSwitchHandler = None
 		# Safe settings panel registration - won't crash if API changes in different NVDA versions
 		try:
 			if hasattr(gui.settingsDialogs, "NVDASettingsDialog"):
@@ -746,6 +747,11 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 		_schedule_system_config_host_mismatch_notice()
 
+		# The native host retains its active dictionary until explicitly changed.
+		# Reapply the newly aggregated setting whenever NVDA switches profiles.
+		self._configProfileSwitchHandler = self._onConfigProfileSwitch
+		config.post_configProfileSwitch.register(self._configProfileSwitchHandler)
+
 		# One-time migration notice for users updating from multiprocessing-based IPC
 		try:
 			eci_conf = config.conf.get("speech", {}).get("ibmeci")
@@ -775,7 +781,27 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		except Exception:
 			pass  # Never let a notice prevent the synth from working
 
+	def _onConfigProfileSwitch(self, **kwargs):
+		try:
+			data_directory = os.path.dirname(_eloquence.eciPath)
+			profile = _eloquence_dictionaries.resolve_profile(
+				config.conf.get("eloquence", {}),
+				data_directory,
+				migrate=not globalVars.appArgs.secure,
+			)
+			directory = _eloquence_dictionaries.active_directory(data_directory, profile)
+			_eloquence.set_dictionary_directory(directory)
+		except Exception:
+			log.exception("Could not activate the Eloquence dictionary for the new configuration profile")
+
 	def terminate(self):
+		profile_switch_handler = getattr(self, "_configProfileSwitchHandler", None)
+		if profile_switch_handler is not None:
+			try:
+				config.post_configProfileSwitch.unregister(profile_switch_handler)
+			except Exception:
+				log.exception("Could not unregister the Eloquence configuration profile listener")
+			self._configProfileSwitchHandler = None
 		# NVDA destroys the current driver before constructing the replacement.
 		# Release the native host as well as its WavePlayer so that switching back
 		# can create a fresh ECI engine immediately.
