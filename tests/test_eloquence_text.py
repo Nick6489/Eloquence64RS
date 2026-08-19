@@ -51,6 +51,16 @@ class EloquenceTextBuilderTests(unittest.TestCase):
 			_eloquence_text.build("literal ` tag", 65536, self._options(backquote_tags=False)),
 			b"`pp0 `da0 `vv80 literal   tag",
 		)
+
+	def test_string_boolean_values_cannot_crash_speech_builder(self):
+		built = _eloquence_text.build(
+			"safe",
+			65536,
+			self._options(abbreviation_dict="False", phrase_prediction="False"),
+		)
+
+		self.assertIn(b"`da0", built)
+		self.assertIn(b"`pp0", built)
 		self.assertEqual(
 			_eloquence_text.build("literal ` tag", 65536, self._options(backquote_tags=True)),
 			b"`pp0 `da0 `vv80 literal ` tag",

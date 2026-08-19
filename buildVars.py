@@ -1,6 +1,7 @@
 # Build customizations
 # Change this file instead of SConstruct or manifest files, whenever possible.
 
+import os
 import subprocess
 
 
@@ -11,6 +12,9 @@ def _get_version():
 	- Between tags: returns describe output (e.g. "v19.0-RS-2-gabcdef")
 	- No git / no tags: returns "dev"
 	"""
+	override = os.environ.get("ELOQUENCE_BUILD_VERSION", "").strip()
+	if override:
+		return override
 	try:
 		result = subprocess.run(
 			["git", "describe", "--tags"],

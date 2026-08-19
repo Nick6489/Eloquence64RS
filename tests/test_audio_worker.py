@@ -59,6 +59,40 @@ class FakeClient:
 
 
 class AudioWorkerTests(unittest.TestCase):
+	def test_permanent_voice_parameter_waits_for_host_readback(self):
+		module = _load_client_module()
+		client = Mock()
+		client.send_command.return_value = {"voiceParams": {module.rate: 173}}
+		module._client = client
+		module.voice_params.clear()
+
+		module.setVParam(module.rate, 180)
+
+		client.send_command.assert_called_once_with(
+			"setVoiceParam",
+			paramId=module.rate,
+			value=180,
+			temporary=False,
+		)
+		self.assertEqual(module.voice_params[module.rate], 173)
+
+	def test_temporary_voice_parameter_waits_without_changing_base(self):
+		module = _load_client_module()
+		client = Mock()
+		client.send_command.return_value = {"voiceParams": {module.rate: 200}}
+		module._client = client
+		module.voice_params[module.rate] = 150
+
+		module.setVParam(module.rate, 200, temporary=True)
+
+		client.send_command.assert_called_once_with(
+			"setVoiceParam",
+			paramId=module.rate,
+			value=200,
+			temporary=True,
+		)
+		self.assertEqual(module.voice_params[module.rate], 150)
+
 	def test_initialize_restores_enhanced_mode_before_opening_audio(self):
 		module = _load_client_module()
 		module._audio_quality = "enhanced"

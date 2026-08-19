@@ -38,6 +38,13 @@ class BuildOptions:
 	phrase_prediction: bool
 
 
+def _engine_flag(value) -> int:
+	"""Convert defensive boolean-like input without allowing speech to fail."""
+	if isinstance(value, str):
+		return int(value.strip().casefold() in {"1", "true", "yes", "on"})
+	return int(bool(value))
+
+
 def _engine_encode(text: str, voice_id) -> bytes:
 	encoding = _ENGINE_ENCODINGS.get(voice_id)
 	if encoding is not None:
@@ -64,8 +71,8 @@ def build(text: str, voice_id: int, options: BuildOptions) -> bytes:
 	elif options.pause_mode == 2:
 		text = pause_re.sub(r"\1 `p1\2\3\4", text)
 	text = time_re.sub(r"\1:\2 \3", text)
-	text = f"`da{int(options.abbreviation_dict)} {text}"
-	text = f"`pp{int(options.phrase_prediction)} {text}"
+	text = f"`da{_engine_flag(options.abbreviation_dict)} {text}"
+	text = f"`pp{_engine_flag(options.phrase_prediction)} {text}"
 	return _engine_encode(text, voice_id)
 
 

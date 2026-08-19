@@ -71,7 +71,12 @@ import addonHandler
 
 addonHandler.initTranslation()
 
-log = logging.getLogger(__name__)
+try:
+	# Use NVDA's logger so informational driver lifecycle diagnostics reach nvda.log.
+	from logHandler import log
+except ImportError:
+	# Keep the module importable in the standalone unit-test harness.
+	log = logging.getLogger(__name__)
 
 
 minRate = 40
@@ -120,6 +125,288 @@ variants = {
 
 _system_config_host_notice_shown = False
 _system_config_host_notice_timer = None
+
+# NVDA can recreate a synth while a Voice settings panel still contains the
+# outgoing driver's values.  When the audio device also changes, those stale
+# values can be written into the incoming profile's in-memory configuration
+# after the profile stack itself has switched.  Keep an Eloquence-only snapshot
+# per complete profile stack so the engine and NVDA's active configuration can
+# be reconciled without requiring an NVDA core patch.
+_PROFILE_SETTING_IDS = (
+	"voice",
+	"variant",
+	"rate",
+	"pitch",
+	"inflection",
+	"volume",
+	"hsz",
+	"rgh",
+	"bth",
+	"backquoteVoiceTags",
+	"ABRDICT",
+	"phrasePrediction",
+	"pauseMode",
+	"audioQuality",
+)
+_BOOLEAN_PROFILE_SETTING_IDS = frozenset(("backquoteVoiceTags", "ABRDICT", "phrasePrediction"))
+_INTEGER_PROFILE_SETTING_IDS = frozenset(("rate", "pitch", "inflection", "volume", "hsz", "rgh", "bth"))
+_profile_settings_by_stack = {}
+_pending_profile_setting_changes = {}
+_current_profile_stack = None
+_profile_switch_handler_registered = False
+_profile_snapshots_preloaded = False
+_MISSING_PROFILE_SETTING = object()
+
+
+def _active_profile_stack():
+	profiles = getattr(config.conf, "profiles", ())
+	return tuple(getattr(profile, "name", None) or "normal configuration" for profile in profiles)
+
+
+def _eloquence_settings_from(conf):
+	try:
+		settings = conf["speech"]["eloquence"]
+	except (KeyError, TypeError):
+		return {}
+	return {setting_id: settings[setting_id] for setting_id in _PROFILE_SETTING_IDS if setting_id in settings}
+
+
+def _coerce_boolean_setting(value):
+	if isinstance(value, str):
+		return value.strip().casefold() in {"1", "true", "yes", "on"}
+	return bool(value)
+
+
+def _coerce_raw_profile_setting(setting_id, value):
+	if setting_id in _BOOLEAN_PROFILE_SETTING_IDS:
+		return _coerce_boolean_setting(value)
+	if setting_id in _INTEGER_PROFILE_SETTING_IDS:
+		return int(value)
+	return str(value)
+
+
+def _eloquence_settings_from_profile_layers(profiles):
+	"""Merge explicit Eloquence values directly from NVDA's raw profile layers."""
+	settings = {}
+	for profile in profiles:
+		if not profile:
+			continue
+		try:
+			profile_settings = profile["speech"]["eloquence"]
+		except (KeyError, TypeError):
+			continue
+		for setting_id in _PROFILE_SETTING_IDS:
+			if setting_id in profile_settings:
+				try:
+					settings[setting_id] = _coerce_raw_profile_setting(
+						setting_id,
+						profile_settings[setting_id],
+					)
+				except (TypeError, ValueError):
+					log.warning(
+						"Ignoring invalid raw Eloquence setting %s=%r in profile %r",
+						setting_id,
+						profile_settings[setting_id],
+						getattr(profile, "name", None),
+					)
+	return settings
+
+
+def _capture_unseen_active_profile(profile_stack):
+	"""Capture an incoming profile before synth loading can contaminate its merged view."""
+	if profile_stack in _profile_settings_by_stack:
+		return
+	settings = _eloquence_settings_from_profile_layers(getattr(config.conf, "profiles", ()))
+	if not settings:
+		settings = _eloquence_settings_from(config.conf)
+	if settings:
+		_profile_settings_by_stack[profile_stack] = settings
+		log.debug(
+			"Eloquence captured raw incoming profile snapshot: profiles=%s, rate=%s",
+			profile_stack,
+			settings.get("rate"),
+		)
+
+
+def _preload_named_profile_snapshots():
+	"""Read named profiles before a settings dialog/audio switch can mutate them."""
+	global _profile_snapshots_preloaded
+	if _profile_snapshots_preloaded:
+		return
+	list_profiles = getattr(config.conf, "listProfiles", None)
+	get_profile = getattr(config.conf, "_getProfile", None)
+	profiles = getattr(config.conf, "profiles", ())
+	if not callable(list_profiles) or not callable(get_profile) or not profiles:
+		return
+	base_profile = profiles[0]
+	for profile_name in list_profiles():
+		profile_stack = ("normal configuration", profile_name)
+		if profile_stack in _profile_settings_by_stack:
+			continue
+		try:
+			profile = get_profile(profile_name)
+			settings = _eloquence_settings_from_profile_layers((base_profile, profile))
+		except Exception:
+			log.exception("Could not preload Eloquence snapshot for profile %s", profile_name)
+			continue
+		if not settings:
+			continue
+		_profile_settings_by_stack[profile_stack] = settings
+		log.debug(
+			"Eloquence preloaded named profile snapshot: profiles=%s, rate=%s",
+			profile_stack,
+			settings.get("rate"),
+		)
+	_profile_snapshots_preloaded = True
+
+
+def _remember_current_profile_setting(driver, setting_id, value):
+	if getattr(driver, "_loading_profile_settings", False) or _current_profile_stack is None:
+		return
+	profile_stack = _current_profile_stack
+	settings = _profile_settings_by_stack.setdefault(profile_stack, {})
+	pending_key = (profile_stack, setting_id)
+	_pending_profile_setting_changes.setdefault(
+		pending_key,
+		settings.get(setting_id, _MISSING_PROFILE_SETTING),
+	)
+	settings[setting_id] = value
+
+	def confirm_if_config_was_updated():
+		# Settings-ring changes write config immediately after calling the driver
+		# setter.  Dialog controls do not write until Apply/OK.  Checking on the
+		# next wx turn distinguishes a committed ring change from a pending dialog
+		# edit while retaining NVDA's live-preview behavior.
+		if _active_profile_stack() != profile_stack:
+			return
+		try:
+			configured = config.conf["speech"]["eloquence"][setting_id]
+		except (KeyError, TypeError):
+			return
+		if str(configured) == str(value):
+			_pending_profile_setting_changes.pop(pending_key, None)
+
+	wx.CallAfter(confirm_if_config_was_updated)
+
+
+def _discard_pending_profile_settings(profile_stack):
+	settings = _profile_settings_by_stack.get(profile_stack)
+	if settings is None:
+		return
+	for pending_key, previous in list(_pending_profile_setting_changes.items()):
+		stack, setting_id = pending_key
+		if stack != profile_stack:
+			continue
+		if previous is _MISSING_PROFILE_SETTING:
+			settings.pop(setting_id, None)
+		else:
+			settings[setting_id] = previous
+		del _pending_profile_setting_changes[pending_key]
+
+
+def _commit_current_profile_settings(driver):
+	if _current_profile_stack is None:
+		return
+	settings = {}
+	for setting_id in _PROFILE_SETTING_IDS:
+		try:
+			settings[setting_id] = getattr(driver, setting_id)
+		except Exception:
+			log.exception("Could not snapshot committed Eloquence setting %s", setting_id)
+	_profile_settings_by_stack[_current_profile_stack] = settings
+	for pending_key in list(_pending_profile_setting_changes):
+		if pending_key[0] == _current_profile_stack:
+			del _pending_profile_setting_changes[pending_key]
+
+
+def _sync_profile_snapshot_to_config(profile_stack, settings):
+	"""Keep NVDA's active profile cache aligned with the restored engine state."""
+	if _active_profile_stack() != profile_stack:
+		log.warning(
+			"Not persisting Eloquence snapshot for inactive profile stack %s",
+			profile_stack,
+		)
+		return
+	try:
+		configured_settings = config.conf["speech"]["eloquence"]
+	except (KeyError, TypeError):
+		log.exception("Could not access the active Eloquence configuration section")
+		return
+	for setting_id, value in settings.items():
+		try:
+			configured_settings[setting_id] = value
+		except Exception:
+			log.exception(
+				"Could not persist restored Eloquence setting %s for profile stack %s",
+				setting_id,
+				profile_stack,
+			)
+
+
+def _apply_profile_snapshot(driver, profile_stack, settings):
+	was_loading = getattr(driver, "_loading_profile_settings", False)
+	corrected_settings = []
+	driver._loading_profile_settings = True
+	try:
+		for setting_id in _PROFILE_SETTING_IDS:
+			if setting_id not in settings:
+				continue
+			try:
+				current_value = getattr(driver, setting_id)
+			except Exception:
+				corrected_settings.append(setting_id)
+			else:
+				if str(current_value) != str(settings[setting_id]):
+					corrected_settings.append(setting_id)
+			try:
+				setattr(driver, setting_id, settings[setting_id])
+			except Exception:
+				log.exception(
+					"Could not restore Eloquence setting %s for profile stack %s",
+					setting_id,
+					profile_stack,
+				)
+	finally:
+		driver._loading_profile_settings = was_loading
+	# The engine and NVDA's aggregated configuration must agree.  Otherwise an
+	# audio-device-driven synth recreation can look correct for the rest of the
+	# session while NVDA later writes the crossed values to disk on shutdown.
+	_sync_profile_snapshot_to_config(profile_stack, settings)
+	log_profile_restore = log.info if corrected_settings else log.debug
+	log_profile_restore(
+		"Eloquence corrected isolated profile settings: profiles=%s, settings=%s, "
+		"rate=%s, raw ECI rate=%s",
+		profile_stack,
+		corrected_settings,
+		getattr(driver, "rate", None),
+		driver.getVParam(_eloquence.rate),
+	)
+
+
+def _handle_profile_switch(prevConf=None, **_kwargs):
+	global _current_profile_stack
+	incoming_stack = _active_profile_stack()
+	_current_profile_stack = incoming_stack
+	snapshot = _profile_settings_by_stack.get(incoming_stack)
+	if not snapshot:
+		return
+	driver = synthDriverHandler.getSynth()
+	if driver is None or getattr(driver, "name", None) != "eloquence":
+		return
+	_apply_profile_snapshot(driver, incoming_stack, snapshot)
+
+
+def _ensure_profile_isolation_handler():
+	global _current_profile_stack, _profile_switch_handler_registered
+	if _current_profile_stack is None:
+		_current_profile_stack = _active_profile_stack()
+		_profile_settings_by_stack[_current_profile_stack] = _eloquence_settings_from(config.conf)
+	if not _profile_switch_handler_registered:
+		# This handler deliberately lives for the lifetime of the loaded module.
+		# Unregistering it from SynthDriver.terminate would mutate NVDA's Action
+		# while that Action is notifying listeners during an audio-device switch.
+		config.post_configProfileSwitch.register(_handle_profile_switch)
+		_profile_switch_handler_registered = True
 
 
 def _sha256_file(path):
@@ -709,7 +996,10 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			return False
 
 	def __init__(self):
-		self._configProfileSwitchHandler = None
+		# Construction and NVDA's subsequent initSettings call belong to one
+		# profile-load transaction.  Do not let those setter calls overwrite the
+		# outgoing profile snapshot before our post-switch handler runs.
+		self._loading_profile_settings = True
 		# Safe settings panel registration - won't crash if API changes in different NVDA versions
 		try:
 			if hasattr(gui.settingsDialogs, "NVDASettingsDialog"):
@@ -747,11 +1037,6 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 		_schedule_system_config_host_mismatch_notice()
 
-		# The native host retains its active dictionary until explicitly changed.
-		# Reapply the newly aggregated setting whenever NVDA switches profiles.
-		self._configProfileSwitchHandler = self._onConfigProfileSwitch
-		config.post_configProfileSwitch.register(self._configProfileSwitchHandler)
-
 		# One-time migration notice for users updating from multiprocessing-based IPC
 		try:
 			eci_conf = config.conf.get("speech", {}).get("ibmeci")
@@ -781,41 +1066,88 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		except Exception:
 			pass  # Never let a notice prevent the synth from working
 
-	def _onConfigProfileSwitch(self, **kwargs):
+	def loadSettings(self, onlyChanged=False):
+		"""Load NVDA's synth settings and the add-on's profile-scoped dictionary."""
+		active_stack = _active_profile_stack()
+		# On an audio-device profile change, NVDA can recreate the synth using a
+		# merged configuration still carrying the outgoing profile's values.  The
+		# raw ConfigObj layers already identify the incoming profile correctly, so
+		# capture them before calling NVDA's loader for the first time this session.
+		_capture_unseen_active_profile(active_stack)
+		# Named profiles must be copied even earlier than their first activation.
+		# NVDA can mutate the incoming profile layer before constructing this new
+		# driver, so preload clean copies while the initial profile is still stable.
+		_preload_named_profile_snapshots()
+		if _current_profile_stack is not None:
+			# A same-profile full load is NVDA's settings Cancel/reload path.  A
+			# different active stack means a profile switch is in progress.  In both
+			# cases, pending dialog previews were not committed and must not become a
+			# durable profile snapshot.
+			_discard_pending_profile_settings(_current_profile_stack)
+		self._loading_profile_settings = True
 		try:
-			data_directory = os.path.dirname(_eloquence.eciPath)
-			profile = _eloquence_dictionaries.resolve_profile(
-				config.conf.get("eloquence", {}),
-				data_directory,
-				migrate=not globalVars.appArgs.secure,
-			)
-			directory = _eloquence_dictionaries.active_directory(data_directory, profile)
-			_eloquence.set_dictionary_directory(directory)
+			# Activate the dictionary before loading voice parameters.  ECI dictionary
+			# activation can alter the current voice state, so rate, pitch, volume and
+			# the other NVDA profile settings must be the final writes to the engine.
+			try:
+				data_directory = os.path.dirname(_eloquence.eciPath)
+				profile = _eloquence_dictionaries.resolve_profile(
+					config.conf.get("eloquence", {}),
+					data_directory,
+					migrate=not globalVars.appArgs.secure,
+				)
+				directory = _eloquence_dictionaries.active_directory(data_directory, profile)
+				_eloquence.set_dictionary_directory(directory)
+			except Exception:
+				log.exception("Could not activate the Eloquence dictionary for the new configuration profile")
+			# NVDA calls loadSettings for an in-place profile change and initSettings
+			# calls it for a newly constructed driver.  Keeping both operations here
+			# avoids a second post_configProfileSwitch handler while ensuring the
+			# active profile's synth values win over all engine initialization.
+			super().loadSettings(onlyChanged=onlyChanged)
+		finally:
+			self._loading_profile_settings = False
+		_ensure_profile_isolation_handler()
+		if active_stack == _current_profile_stack:
+			snapshot = _profile_settings_by_stack.get(active_stack)
+			if snapshot:
+				_apply_profile_snapshot(self, active_stack, snapshot)
+		try:
+			configured_rate = config.conf["speech"][self.name]["rate"]
 		except Exception:
-			log.exception("Could not activate the Eloquence dictionary for the new configuration profile")
+			configured_rate = None
+		active_profiles = [
+			getattr(profile, "name", None) or "normal configuration"
+			for profile in getattr(config.conf, "profiles", ())
+		]
+		log.debug(
+			"Eloquence profile settings loaded: profiles=%s, configured rate=%s, "
+			"applied rate=%s, raw ECI rate=%s, onlyChanged=%s",
+			active_profiles,
+			configured_rate,
+			self.rate,
+			self.getVParam(_eloquence.rate),
+			onlyChanged,
+		)
+
+	def saveSettings(self):
+		"""Save through NVDA, then commit the active Eloquence profile snapshot."""
+		was_loading = getattr(self, "_loading_profile_settings", False)
+		super().saveSettings()
+		self._loading_profile_settings = False
+		_ensure_profile_isolation_handler()
+		if was_loading or synthDriverHandler.getSynth() is self:
+			_commit_current_profile_settings(self)
 
 	def terminate(self):
-		profile_switch_handler = getattr(self, "_configProfileSwitchHandler", None)
-		if profile_switch_handler is not None:
-			try:
-				config.post_configProfileSwitch.unregister(profile_switch_handler)
-			except Exception:
-				log.exception("Could not unregister the Eloquence configuration profile listener")
-			self._configProfileSwitchHandler = None
 		# NVDA destroys the current driver before constructing the replacement.
 		# Release the native host as well as its WavePlayer so that switching back
 		# can create a fresh ECI engine immediately.
 		_eloquence.terminate()
-		# Safe settings panel removal - won't crash if it was never registered
-		try:
-			if hasattr(gui.settingsDialogs, "NVDASettingsDialog"):
-				if hasattr(gui.settingsDialogs.NVDASettingsDialog, "categoryClasses"):
-					gui.settingsDialogs.NVDASettingsDialog.categoryClasses.remove(EloquenceSettingsPanel)
-		except (ValueError, AttributeError) as e:
-			log.debug(f"Settings panel already removed or never registered: {e}")
-		except Exception as e:
-			log.warning(f"Error removing Eloquence settings panel: {e}")
-
+		# Do not remove or defer removal of EloquenceSettingsPanel here.  A bound
+		# wx.CallAfter callback keeps this obsolete driver alive and prevents NVDA's
+		# VoiceSettingsPanel weakref from rebuilding its controls for the replacement
+		# synth.  Once registered, the add-on panel is safe to retain for this process.
 		super(SynthDriver, self).terminate()
 
 	def combine_adjacent_strings(self, lst):
@@ -972,6 +1304,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	def _set_pauseMode(self, val):
 		self._pause_mode = int(val)
+		_remember_current_profile_setting(self, "pauseMode", str(self._pause_mode))
 
 	def _get_pauseMode(self):
 		return str(self._pause_mode)
@@ -993,6 +1326,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			return
 		_eloquence.set_audio_quality(quality)
 		self._audioQuality = quality
+		_remember_current_profile_setting(self, "audioQuality", quality)
 
 	def _get_audioQuality(self):
 		return self._audioQuality
@@ -1005,25 +1339,31 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		return self._backquoteVoiceTags
 
 	def _set_backquoteVoiceTags(self, enable):
+		enable = _coerce_boolean_setting(enable)
 		if enable == self._backquoteVoiceTags:
 			return
 		self._backquoteVoiceTags = enable
+		_remember_current_profile_setting(self, "backquoteVoiceTags", enable)
 
 	def _get_ABRDICT(self):
 		return self._ABRDICT
 
 	def _set_ABRDICT(self, enable):
+		enable = _coerce_boolean_setting(enable)
 		if enable == self._ABRDICT:
 			return
 		self._ABRDICT = enable
+		_remember_current_profile_setting(self, "ABRDICT", enable)
 
 	def _get_phrasePrediction(self):
 		return self._phrasePrediction
 
 	def _set_phrasePrediction(self, enable):
+		enable = _coerce_boolean_setting(enable)
 		if enable == self._phrasePrediction:
 			return
 		self._phrasePrediction = enable
+		_remember_current_profile_setting(self, "phrasePrediction", enable)
 
 	def _get_rate(self):
 		return self._paramToPercent(self.getVParam(_eloquence.rate), minRate, maxRate)
@@ -1031,22 +1371,26 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _set_rate(self, vl):
 		self._rate = self._percentToParam(vl, minRate, maxRate)
 		self.setVParam(_eloquence.rate, self._percentToParam(vl, minRate, maxRate))
+		_remember_current_profile_setting(self, "rate", int(vl))
 
 	def _get_pitch(self):
 		return self.getVParam(_eloquence.pitch)
 
 	def _set_pitch(self, vl):
 		self.setVParam(_eloquence.pitch, vl)
+		_remember_current_profile_setting(self, "pitch", int(vl))
 
 	def _get_volume(self):
 		return self.getVParam(_eloquence.vlm)
 
 	def _set_volume(self, vl):
 		self.setVParam(_eloquence.vlm, int(vl))
+		_remember_current_profile_setting(self, "volume", int(vl))
 
 	def _set_inflection(self, vl):
 		vl = int(vl)
 		self.setVParam(_eloquence.fluctuation, vl)
+		_remember_current_profile_setting(self, "inflection", vl)
 
 	def _get_inflection(self):
 		return self.getVParam(_eloquence.fluctuation)
@@ -1054,6 +1398,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _set_hsz(self, vl):
 		vl = int(vl)
 		self.setVParam(_eloquence.hsz, vl)
+		_remember_current_profile_setting(self, "hsz", vl)
 
 	def _get_hsz(self):
 		return self.getVParam(_eloquence.hsz)
@@ -1061,6 +1406,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _set_rgh(self, vl):
 		vl = int(vl)
 		self.setVParam(_eloquence.rgh, vl)
+		_remember_current_profile_setting(self, "rgh", vl)
 
 	def _get_rgh(self):
 		return self.getVParam(_eloquence.rgh)
@@ -1068,6 +1414,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _set_bth(self, vl):
 		vl = int(vl)
 		self.setVParam(_eloquence.bth, vl)
+		_remember_current_profile_setting(self, "bth", vl)
 
 	def _get_bth(self):
 		return self.getVParam(_eloquence.bth)
@@ -1089,6 +1436,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _set_voice(self, vl):
 		_eloquence.set_voice(vl)
 		self._update_voice_state(vl, update_default=True)
+		_remember_current_profile_setting(self, "voice", str(vl))
 
 	def _update_voice_state(self, voice_id, update_default):
 		voice_str = str(voice_id)
@@ -1162,6 +1510,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._variant = v if int(v) in variants else "1"
 		_eloquence.setVariant(int(v))
 		self.setVParam(_eloquence.rate, self._rate)
+		_remember_current_profile_setting(self, "variant", str(self._variant))
 		#  if 'eloquence' in config.conf['speech']:
 		#   config.conf['speech']['eloquence']['pitch'] = self.pitch
 

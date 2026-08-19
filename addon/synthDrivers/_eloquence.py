@@ -648,10 +648,27 @@ def getVParam(pr):
 def setVParam(pr, vl, temporary=False):
 	try:
 		response = _client.send_command(
-			"setVoiceParam", paramId=int(pr), value=int(vl), temporary=bool(temporary), wait=False
+			"setVoiceParam",
+			paramId=int(pr),
+			value=int(vl),
+			temporary=bool(temporary),
 		)
 		if not temporary:
-			voice_params[pr] = response.get("voiceParams", {}).get(pr, vl)
+			# The native host reads the value back from ECI in its response.  Keep
+			# our shadow state authoritative instead of claiming success as soon as
+			# an asynchronous command has merely been written to the pipe.  This is
+			# especially important while NVDA reconstructs the driver for an audio
+			# device profile change: initSettings must not return until that profile's
+			# voice parameters have actually reached the replacement engine.
+			applied = response.get("voiceParams", {}).get(pr, vl)
+			voice_params[pr] = applied
+			if applied != vl:
+				LOGGER.warning(
+					"Eloquence host read back voice parameter %s as %s after setting %s",
+					pr,
+					applied,
+					vl,
+				)
 	except Exception:
 		LOGGER.exception("Failed to set voice parameter")
 

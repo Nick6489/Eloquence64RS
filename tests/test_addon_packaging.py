@@ -2,7 +2,9 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
+import buildVars
 from site_scons.site_tools.NVDATool.addon import createAddonBundleFromPath
 
 
@@ -10,6 +12,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class AddonPackagingTests(unittest.TestCase):
+	def test_build_version_can_be_overridden_for_unambiguous_test_packages(self):
+		with mock.patch.dict(
+			buildVars.os.environ,
+			{"ELOQUENCE_BUILD_VERSION": "v19.1.1-RS-profile-rate-order-test2"},
+		):
+			self.assertEqual(
+				buildVars._get_version(),
+				"v19.1.1-RS-profile-rate-order-test2",
+			)
+
 	def test_nvda_addon_bundle_includes_script_conversion_data(self):
 		with tempfile.TemporaryDirectory() as root:
 			addon_path = Path(root) / "Eloquence-test.nvda-addon"

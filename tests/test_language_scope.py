@@ -65,45 +65,30 @@ class _Notification:
 		self.calls.append(kwargs)
 
 
-class _Action:
-	def __init__(self):
-		self.handlers = []
-
-	def register(self, handler):
-		self.handlers.append(handler)
-
-	def unregister(self, handler):
-		self.handlers.remove(handler)
-
-	def notify(self, **kwargs):
-		for handler in tuple(self.handlers):
-			handler(**kwargs)
-
-
 class _SynthBase:
 	@staticmethod
 	def VoiceSetting():
-		return object()
+		return types.SimpleNamespace(id="voice")
 
 	@staticmethod
 	def VariantSetting():
-		return object()
+		return types.SimpleNamespace(id="variant")
 
 	@staticmethod
 	def RateSetting():
-		return object()
+		return types.SimpleNamespace(id="rate")
 
 	@staticmethod
 	def PitchSetting():
-		return object()
+		return types.SimpleNamespace(id="pitch")
 
 	@staticmethod
 	def InflectionSetting():
-		return object()
+		return types.SimpleNamespace(id="inflection")
 
 	@staticmethod
 	def VolumeSetting():
-		return object()
+		return types.SimpleNamespace(id="volume")
 
 	def _percentToParam(self, value, min_value, max_value):
 		return int(min_value + (max_value - min_value) * value / 100)
@@ -113,6 +98,12 @@ class _SynthBase:
 
 	def terminate(self):
 		self.base_terminated = True
+
+	def loadSettings(self, onlyChanged=False):
+		self.base_load_settings_calls = getattr(self, "base_load_settings_calls", [])
+		self.base_load_settings_calls.append(onlyChanged)
+		if hasattr(self, "settings_lifecycle_events"):
+			self.settings_lifecycle_events.append("settings")
 
 
 class _SpeechQueue:
@@ -137,6 +128,12 @@ class _AggregatedConfigSection:
 
 	def get(self, key, default=None):
 		return self.values.get(key, default)
+
+
+class _ConfigRoot(dict):
+	def __init__(self, *args, profiles=(), **kwargs):
+		super().__init__(*args, **kwargs)
+		self.profiles = list(profiles)
 
 
 class _Choice:
@@ -238,15 +235,16 @@ def _install_nvda_stubs():
 	sys.modules["speech"] = speech
 
 	driver_handler = types.ModuleType("driverHandler")
-	driver_handler.NumericDriverSetting = lambda *args, **kwargs: object()
-	driver_handler.BooleanDriverSetting = lambda *args, **kwargs: object()
-	driver_handler.DriverSetting = lambda *args, **kwargs: object()
+	driver_handler.NumericDriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(id=setting_id)
+	driver_handler.BooleanDriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(id=setting_id)
+	driver_handler.DriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(id=setting_id)
 	sys.modules["driverHandler"] = driver_handler
 
 	synth_driver_handler = types.ModuleType("synthDriverHandler")
 	synth_driver_handler.SynthDriver = _SynthBase
 	synth_driver_handler.synthIndexReached = _Notification()
 	synth_driver_handler.synthDoneSpeaking = _Notification()
+	synth_driver_handler.getSynth = lambda: None
 	synth_driver_handler.VoiceInfo = lambda *args, **kwargs: types.SimpleNamespace(
 		id=args[0] if args else None,
 		name=args[1] if len(args) > 1 else None,
@@ -271,8 +269,8 @@ def _install_nvda_stubs():
 	sys.modules["winsound"] = types.ModuleType("winsound")
 	sys.modules["config"] = types.SimpleNamespace(
 		conf={},
-		post_configProfileSwitch=_Action(),
 		save=lambda: None,
+		post_configProfileSwitch=types.SimpleNamespace(register=mock.Mock()),
 	)
 	sys.modules["core"] = types.SimpleNamespace(postNvdaStartup=types.SimpleNamespace(register=mock.Mock()))
 	sys.modules["globalVars"] = types.SimpleNamespace(appArgs=types.SimpleNamespace(secure=False))
@@ -306,7 +304,6 @@ def _new_driver(module):
 	driver._backquoteVoiceTags = False
 	driver._ABRDICT = False
 	driver._phrasePrediction = False
-	driver._configProfileSwitchHandler = None
 	driver.rate = 50
 	return driver
 
@@ -332,6 +329,16 @@ def _queued_text(calls, eloquence_stub):
 
 
 class LanguageScopeTests(unittest.TestCase):
+	def setUp(self):
+		from addon.synthDrivers import _text_preprocessing
+
+		self._original_preprocess = _text_preprocessing.preprocess
+
+	def tearDown(self):
+		from addon.synthDrivers import _text_preprocessing
+
+		_text_preprocessing.preprocess = self._original_preprocess
+
 	def test_dictionary_download_refreshes_choice_label_without_reopening_settings(self):
 		module, eloquence_stub, _preprocess_calls = _load_driver()
 		module.wx.MessageBox = mock.Mock()
@@ -512,31 +519,302 @@ class LanguageScopeTests(unittest.TestCase):
 		self.assertTrue(eloquence_stub.terminated)
 		self.assertTrue(driver.base_terminated)
 
-	def test_configuration_profile_switch_activates_its_dictionary(self):
+	def test_termination_does_not_defer_settings_panel_cleanup(self):
 		module, eloquence_stub, _preprocess_calls = _load_driver()
 		driver = _new_driver(module)
-		module.config.conf = {"eloquence": {"dictionary_profile": "community"}}
-		eloquence_stub.set_dictionary_directory = mock.Mock()
+		module.gui.settingsDialogs.NVDASettingsDialog = types.SimpleNamespace(
+			categoryClasses=[module.EloquenceSettingsPanel]
+		)
+		module.wx.CallAfter.reset_mock()
+
+		driver.terminate()
+
+		self.assertTrue(eloquence_stub.terminated)
+		module.wx.CallAfter.assert_not_called()
+		self.assertIn(
+			module.EloquenceSettingsPanel,
+			module.gui.settingsDialogs.NVDASettingsDialog.categoryClasses,
+		)
+
+	def test_load_settings_activates_configuration_profiles_dictionary(self):
+		module, eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		driver.settings_lifecycle_events = []
+		module.config.conf = {
+			"eloquence": {"dictionary_profile": "community"},
+			"speech": {"eloquence": {"rate": 64}},
+		}
+		eloquence_stub.set_dictionary_directory = mock.Mock(
+			side_effect=lambda _directory: driver.settings_lifecycle_events.append("dictionary")
+		)
 
 		with mock.patch.object(
 			module._eloquence_dictionaries,
 			"active_directory",
 			return_value=r"C:\dictionaries\community",
 		) as active_directory:
-			driver._onConfigProfileSwitch(prevConf={})
+			driver.loadSettings(onlyChanged=True)
 
+		self.assertEqual(driver.base_load_settings_calls, [True])
+		self.assertEqual(driver.settings_lifecycle_events, ["dictionary", "settings"])
 		active_directory.assert_called_once_with("C:\\", "community")
 		eloquence_stub.set_dictionary_directory.assert_called_once_with(r"C:\dictionaries\community")
 
-	def test_driver_terminate_unregisters_configuration_profile_listener(self):
+	def test_profile_snapshot_restores_incoming_engine_and_repairs_config(self):
+		module, eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		driver.name = "eloquence"
+		module.synthDriverHandler.getSynth = lambda: driver
+		module._current_profile_stack = ("normal configuration", "Test Profile")
+		module._profile_settings_by_stack = {
+			("normal configuration",): {"rate": 64},
+		}
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"rate": 44}}},
+			profiles=[types.SimpleNamespace(name=None)],
+		)
+		driver.rate = 44
+		module._remember_current_profile_setting(driver, "rate", 44)
+
+		module._handle_profile_switch(prevConf={"speech": {"eloquence": {"rate": 44}}})
+
+		self.assertEqual(driver.rate, 64)
+		self.assertEqual(module.config.conf["speech"]["eloquence"]["rate"], 64)
+		self.assertEqual(
+			module._profile_settings_by_stack[("normal configuration", "Test Profile")]["rate"],
+			44,
+		)
+		self.assertEqual(module._current_profile_stack, ("normal configuration",))
+
+	def test_profile_snapshot_repairs_named_profile_config_for_restart(self):
 		module, _eloquence_stub, _preprocess_calls = _load_driver()
 		driver = _new_driver(module)
-		driver._configProfileSwitchHandler = driver._onConfigProfileSwitch
-		module.config.post_configProfileSwitch.register(driver._configProfileSwitchHandler)
+		driver.name = "eloquence"
+		module.synthDriverHandler.getSynth = lambda: driver
+		module._current_profile_stack = ("normal configuration",)
+		module._profile_settings_by_stack = {
+			("normal configuration", "Test Profile"): {"rate": 44, "volume": 92},
+		}
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"rate": 64, "volume": 62}}},
+			profiles=[types.SimpleNamespace(name=None), types.SimpleNamespace(name="Test Profile")],
+		)
 
-		driver.terminate()
+		module._handle_profile_switch(prevConf={"speech": {"eloquence": {"rate": 64}}})
 
-		self.assertEqual(module.config.post_configProfileSwitch.handlers, [])
+		self.assertEqual(driver.rate, 44)
+		self.assertEqual(driver.volume, 92)
+		self.assertEqual(module.config.conf["speech"]["eloquence"]["rate"], 44)
+		self.assertEqual(module.config.conf["speech"]["eloquence"]["volume"], 92)
+
+	def test_unseen_profile_uses_raw_layers_before_merged_config_is_contaminated(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		module._current_profile_stack = ("normal configuration", "British Eloquence")
+		module._profile_settings_by_stack = {}
+
+		class Profile(dict):
+			def __init__(self, name, values):
+				super().__init__(values)
+				self.name = name
+
+		base = Profile(
+			None,
+			{
+				"speech": {
+					"eloquence": {
+						"voice": "65536",
+						"rate": "64",
+						"volume": "90",
+						"phrasePrediction": "False",
+					}
+				}
+			},
+		)
+		test_profile = Profile(
+			"Test Profile",
+			{
+				"speech": {
+					"eloquence": {
+						"voice": "65536",
+						"rate": "44",
+						"volume": "70",
+						"phrasePrediction": "False",
+					}
+				}
+			},
+		)
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"voice": "65537", "rate": 54, "volume": 90}}, "eloquence": {}},
+			profiles=[base, test_profile],
+		)
+
+		def load_contaminated_british_values(instance, onlyChanged=False):
+			instance.voice = "65537"
+			instance.rate = 54
+			instance.volume = 90
+
+		with mock.patch.object(
+			_SynthBase,
+			"loadSettings",
+			autospec=True,
+			side_effect=load_contaminated_british_values,
+		):
+			driver.loadSettings(onlyChanged=False)
+
+		incoming_stack = ("normal configuration", "Test Profile")
+		self.assertEqual(module._profile_settings_by_stack[incoming_stack]["rate"], 44)
+		module.synthDriverHandler.getSynth = lambda: driver
+		module._handle_profile_switch()
+		self.assertEqual(driver.voice, "65536")
+		self.assertEqual(driver.rate, 44)
+		self.assertEqual(driver.volume, 70)
+		self.assertIs(driver.phrasePrediction, False)
+		self.assertEqual(module.config.conf["speech"]["eloquence"]["rate"], 44)
+
+	def test_named_profile_is_preloaded_before_its_live_layer_is_contaminated(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+
+		class Profile(dict):
+			def __init__(self, name, values):
+				super().__init__(values)
+				self.name = name
+
+		base = Profile(
+			None,
+			{"speech": {"eloquence": {"voice": "65536", "rate": "64"}}},
+		)
+		test_profile = Profile(
+			"Test Profile",
+			{"speech": {"eloquence": {"voice": "65536", "rate": "44"}}},
+		)
+		conf = _ConfigRoot(
+			{"speech": {"eloquence": {"voice": "65536", "rate": 64}}},
+			profiles=[base],
+		)
+		conf.listProfiles = lambda: ["Test Profile"]
+		conf._getProfile = lambda name: test_profile
+		module.config.conf = conf
+
+		module._preload_named_profile_snapshots()
+		test_profile["speech"]["eloquence"]["rate"] = "64"
+
+		self.assertEqual(
+			module._profile_settings_by_stack[("normal configuration", "Test Profile")]["rate"],
+			44,
+		)
+
+	def test_trigger_and_manual_profile_layers_merge_in_activation_order(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+
+		class Profile(dict):
+			def __init__(self, name, values):
+				super().__init__(values)
+				self.name = name
+
+		base = Profile(
+			None,
+			{"speech": {"eloquence": {"voice": "65536", "rate": "64", "volume": "90"}}},
+		)
+		trigger = Profile(
+			"Sonos",
+			{"speech": {"eloquence": {"rate": "48", "volume": "80"}}},
+		)
+		manual = Profile(
+			"British Eloquence",
+			{"speech": {"eloquence": {"voice": "65537", "rate": "54"}}},
+		)
+		stack = ("normal configuration", "Sonos", "British Eloquence")
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"voice": "65537", "rate": 54, "volume": 80}}},
+			profiles=[base, trigger, manual],
+		)
+
+		module._capture_unseen_active_profile(stack)
+
+		self.assertEqual(
+			module._profile_settings_by_stack[stack],
+			{"voice": "65537", "rate": 54, "volume": 80},
+		)
+
+	def test_profile_load_and_corrupt_prev_conf_do_not_poison_snapshot(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		driver._loading_profile_settings = True
+		module._current_profile_stack = ("normal configuration",)
+		module._profile_settings_by_stack = {("normal configuration",): {"rate": 64}}
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"rate": 54}}},
+			profiles=[types.SimpleNamespace(name=None), types.SimpleNamespace(name="British Eloquence")],
+		)
+
+		module._remember_current_profile_setting(driver, "rate", 54)
+		module._handle_profile_switch(prevConf={"speech": {"eloquence": {"rate": 44}}})
+
+		self.assertEqual(module._profile_settings_by_stack[("normal configuration",)]["rate"], 64)
+
+	def test_same_profile_reload_restores_committed_snapshot(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		module._current_profile_stack = ("normal configuration",)
+		module._profile_settings_by_stack = {("normal configuration",): {"rate": 64}}
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"rate": 44}}, "eloquence": {}},
+			profiles=[types.SimpleNamespace(name=None)],
+		)
+
+		def load_contaminated_rate(instance, onlyChanged=False):
+			instance.rate = 44
+
+		with mock.patch.object(_SynthBase, "loadSettings", autospec=True, side_effect=load_contaminated_rate):
+			driver.loadSettings(onlyChanged=False)
+
+		self.assertEqual(driver.rate, 64)
+		self.assertEqual(module.config.conf["speech"]["eloquence"]["rate"], 64)
+
+	def test_same_profile_reload_discards_uncommitted_dialog_preview(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		module._current_profile_stack = ("normal configuration",)
+		module._profile_settings_by_stack = {("normal configuration",): {"rate": 64}}
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"rate": 44}}, "eloquence": {}},
+			profiles=[types.SimpleNamespace(name=None)],
+		)
+		module._remember_current_profile_setting(driver, "rate", 70)
+
+		def load_contaminated_rate(instance, onlyChanged=False):
+			instance.rate = 44
+
+		with mock.patch.object(_SynthBase, "loadSettings", autospec=True, side_effect=load_contaminated_rate):
+			driver.loadSettings(onlyChanged=False)
+
+		self.assertEqual(driver.rate, 64)
+		self.assertEqual(module._profile_settings_by_stack[("normal configuration",)]["rate"], 64)
+
+	def test_settings_ring_change_commits_after_nvda_updates_config(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		module._current_profile_stack = ("normal configuration",)
+		module._profile_settings_by_stack = {("normal configuration",): {"rate": 64}}
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"rate": 64}}},
+			profiles=[types.SimpleNamespace(name=None)],
+		)
+		callbacks = []
+		module.wx.CallAfter.side_effect = lambda callback, *args, **kwargs: callbacks.append(
+			lambda: callback(*args, **kwargs)
+		)
+
+		module._remember_current_profile_setting(driver, "rate", 65)
+		module.config.conf["speech"]["eloquence"]["rate"] = 65
+		callbacks.pop()()
+
+		self.assertEqual(module._profile_settings_by_stack[("normal configuration",)]["rate"], 65)
+		self.assertNotIn(
+			(("normal configuration",), "rate"),
+			module._pending_profile_setting_changes,
+		)
 
 	def test_english_document_language_does_not_replace_default_voice(self):
 		module, eloquence_stub, preprocess_calls = _load_driver()
