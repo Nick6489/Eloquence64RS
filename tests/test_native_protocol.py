@@ -33,6 +33,51 @@ class NativeProtocolTests(unittest.TestCase):
 		)
 		self.assertEqual(decoded[-1][2], struct.pack("<I", 5) + b"hello")
 
+	def test_add_text_after_stop_does_not_open_a_new_generation(self):
+		# Leftover worker commands after cancel must not start a new Speech
+		# Generation. Stop closes the current generation; a later addText is
+		# stale and should not emit BEGIN_GENERATION.
+		self.connection.send(
+			{"type": "command", "id": 2, "command": "addText", "payload": {"text": b"one"}}
+		)
+		self.connection.send({"type": "command", "id": 3, "command": "stop", "payload": {}})
+		self.connection.send(
+			{"type": "command", "id": 4, "command": "addText", "payload": {"text": b"two"}}
+		)
+		self.connection.send({"type": "command", "id": 5, "command": "synthesize", "payload": {}})
+		self.assertEqual(
+			[frame[0] for frame in self.module.frames(self.writer.getvalue())],
+			[
+				self.module.HELLO,
+				self.module.BEGIN_GENERATION,
+				self.module.ADD_TEXT,
+				self.module.STOP,
+				self.module.ADD_TEXT,
+				self.module.SYNTHESIZE,
+			],
+		)
+
+	def test_prepare_generation_after_stop_opens_a_new_generation(self):
+		self.connection.send(
+			{"type": "command", "id": 2, "command": "addText", "payload": {"text": b"one"}}
+		)
+		self.connection.send({"type": "command", "id": 3, "command": "stop", "payload": {}})
+		self.connection.prepare_generation()
+		self.connection.send(
+			{"type": "command", "id": 4, "command": "addText", "payload": {"text": b"two"}}
+		)
+		self.assertEqual(
+			[frame[0] for frame in self.module.frames(self.writer.getvalue())],
+			[
+				self.module.HELLO,
+				self.module.BEGIN_GENERATION,
+				self.module.ADD_TEXT,
+				self.module.STOP,
+				self.module.BEGIN_GENERATION,
+				self.module.ADD_TEXT,
+			],
+		)
+
 	def test_initialize_encodes_language_and_configuration(self):
 		self.connection.send(
 			{

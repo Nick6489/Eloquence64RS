@@ -24,11 +24,22 @@ def _load_client_module():
 		"buildVersion": build_version_module,
 		"globalVars": global_vars_module,
 	}
-	previous = {name: sys.modules.get(name) for name in stubs}
+	repo = Path(__file__).parents[1]
+	packages = {
+		"addon": repo / "addon",
+		"addon.synthDrivers": repo / "addon" / "synthDrivers",
+	}
+	previous = {name: sys.modules.get(name) for name in (*stubs, *packages)}
 	sys.modules.update(stubs)
+	for name, path in packages.items():
+		if name not in sys.modules or not hasattr(sys.modules[name], "__path__"):
+			package = types.ModuleType(name)
+			package.__path__ = [str(path)]
+			package.__package__ = name
+			sys.modules[name] = package
 	module_name = "addon.synthDrivers._eloquence_audio_test"
 	try:
-		path = Path(__file__).parents[1] / "addon" / "synthDrivers" / "_eloquence.py"
+		path = repo / "addon" / "synthDrivers" / "_eloquence.py"
 		spec = importlib.util.spec_from_file_location(module_name, path)
 		module = importlib.util.module_from_spec(spec)
 		sys.modules[module_name] = module
@@ -236,6 +247,105 @@ class AudioWorkerTests(unittest.TestCase):
 			event.set()
 		thread.join(timeout=1)
 		self.assertFalse(thread.is_alive())
+
+	def test_cancel_during_prosody_reset_does_not_send_remaining_speech_commands(self):
+		# The worker checks the Speech Generation only before the first command.
+		# Cancel during the blocking prosody reset must drop the rest of the
+		# item so leftover addText/synthesize cannot start after Stop.
+		module = _load_client_module()
+		client = module.EloquenceHostClient()
+		client._host = module.HostProcess(process=Mock(), connection=Mock())
+		module._client = client
+		module.voice_params.update(
+			{
+				module.rate: 50,
+				module.pitch: 50,
+				module.vlm: 50,
+			}
+		)
+		recorded = []
+		first_voice_param = threading.Event()
+		resume = threading.Event()
+
+		def send_command(command, wait=True, **payload):
+			recorded.append(command)
+			if command == "setVoiceParam" and not first_voice_param.is_set():
+				first_voice_param.set()
+				self.assertTrue(resume.wait(timeout=2))
+			return {"voiceParams": {}}
+
+		client.send_command = send_command
+		item = [
+			(module.cmdProsody, (module.rate, 1, 0)),
+			(module.cmdProsody, (module.pitch, 1, 0)),
+			(module.cmdProsody, (module.vlm, 1, 0)),
+			(module.speak, (b"hello",)),
+			(module.index, (0xFFFF,)),
+			(module.synth, ()),
+		]
+		try:
+			module.synth_queue.put((item, client._sequence))
+			module._ensure_synth_worker()
+			self.assertTrue(first_voice_param.wait(timeout=2))
+			module.stop()
+			resume.set()
+			module.synth_queue.join()
+			self.assertIn("stop", recorded)
+			self.assertNotIn("addText", recorded)
+			self.assertNotIn("insertIndex", recorded)
+			self.assertNotIn("synthesize", recorded)
+		finally:
+			resume.set()
+			module._stop_synth_worker()
+
+	def test_new_utterance_after_cancel_still_sends_speech_commands(self):
+		module = _load_client_module()
+		client = module.EloquenceHostClient()
+		client._host = module.HostProcess(process=Mock(), connection=Mock())
+		module._client = client
+		module.voice_params.update(
+			{
+				module.rate: 50,
+				module.pitch: 50,
+				module.vlm: 50,
+			}
+		)
+		recorded = []
+		first_voice_param = threading.Event()
+		resume = threading.Event()
+
+		def send_command(command, wait=True, **payload):
+			recorded.append(command)
+			if command == "setVoiceParam" and not first_voice_param.is_set():
+				first_voice_param.set()
+				self.assertTrue(resume.wait(timeout=2))
+			return {"voiceParams": {}}
+
+		client.send_command = send_command
+		cancelled_item = [
+			(module.cmdProsody, (module.rate, 1, 0)),
+			(module.speak, (b"old",)),
+			(module.synth, ()),
+		]
+		next_item = [
+			(module.cmdProsody, (module.rate, 1, 0)),
+			(module.speak, (b"new",)),
+			(module.synth, ()),
+		]
+		try:
+			module.synth_queue.put((cancelled_item, client._sequence))
+			module._ensure_synth_worker()
+			self.assertTrue(first_voice_param.wait(timeout=2))
+			module.stop()
+			module.synth_queue.put((next_item, client._sequence))
+			resume.set()
+			module.synth_queue.join()
+			self.assertIn("stop", recorded)
+			self.assertEqual(recorded.count("addText"), 1)
+			self.assertEqual(recorded.count("synthesize"), 1)
+		finally:
+			resume.set()
+			module._stop_synth_worker()
 
 	def test_broken_host_pipe_is_an_error(self):
 		module = _load_client_module()

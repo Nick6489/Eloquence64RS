@@ -126,10 +126,16 @@ class NativeHostConnection:
 		self._generation = 0
 		self._generation_open = False
 		self._active_generation = None
+		self._cancelled = False
 		self._write_frame(HELLO, 1, _bytes(authkey))
 		kind, request_id, payload = _read_frame(self._reader)
 		if kind != HELLO_ACK or request_id != 1 or payload:
 			raise NativeHostProtocolError("native host rejected protocol handshake")
+
+	def prepare_generation(self) -> None:
+		"""Allow the next addText/insertIndex to open a Speech Generation."""
+		with self._send_lock:
+			self._cancelled = False
 
 	def send(self, message: Dict) -> None:
 		if message.get("type") != "command":
@@ -139,10 +145,14 @@ class NativeHostConnection:
 		payload = message.get("payload", {})
 		with self._send_lock:
 			if command in {"addText", "insertIndex"} and not self._generation_open:
-				self._generation += 1
-				self._active_generation = self._generation
-				self._generation_open = True
-				self._write_frame(BEGIN_GENERATION, 0, struct.pack("<Q", self._generation))
+				# Stop closes the generation. Leftover addText from a cancelled
+				# worker item must not open a new one; the worker calls
+				# prepare_generation() before a genuine new utterance.
+				if not self._cancelled:
+					self._generation += 1
+					self._active_generation = self._generation
+					self._generation_open = True
+					self._write_frame(BEGIN_GENERATION, 0, struct.pack("<Q", self._generation))
 			kind, encoded = self._encode_command(command, payload)
 			self._write_frame(kind, request_id, encoded)
 			if command == "synthesize":
@@ -150,6 +160,7 @@ class NativeHostConnection:
 			elif command == "stop":
 				self._generation_open = False
 				self._active_generation = None
+				self._cancelled = True
 
 	def recv(self) -> Dict:
 		while True:

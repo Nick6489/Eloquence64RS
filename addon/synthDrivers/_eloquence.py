@@ -327,6 +327,11 @@ class EloquenceHostClient:
 			LOGGER.debug("Unhandled host event %s", event)
 
 	# ------------------------------------------------------------------
+	def prepare_generation(self) -> None:
+		connection = self._host.connection if self._host else None
+		if connection is not None:
+			connection.prepare_generation()
+
 	def stop(self) -> None:
 		if not self._host:
 			return
@@ -701,8 +706,11 @@ def _synth_worker_loop() -> None:
 			synth_queue.task_done()
 			continue
 		_client._current_seq = seq
+		_client.prepare_generation()
 		try:
 			for func, args in lst:
+				if seq < _client._sequence:
+					break
 				try:
 					func(*args)
 				except Exception:
