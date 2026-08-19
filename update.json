@@ -1,5 +1,5 @@
 {
-  "version": "19.1.1-RS",
-  "download_url": "https://github.com/Nick6489/Eloquence64RS/releases/download/v19.1.1-RS/Eloquence-v19.1.1-RS.nvda-addon",
-  "changelog": "Eloquence64RS 19.1.1 is a stable hotfix that makes pronunciation dictionary selection follow NVDA configuration profile changes immediately."
+  "version": "19.1.2-RS",
+  "download_url": "https://github.com/Nick6489/Eloquence64RS/releases/download/v19.1.2-RS/Eloquence-19.1.2-RS.nvda-addon",
+  "changelog": "Eloquence64RS 19.1.2 is a stable hotfix that keeps Eloquence settings isolated between NVDA configuration profiles when audio-device changes recreate the synthesizer."
 }
