@@ -1218,8 +1218,12 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def terminate(self):
 		# NVDA destroys the current driver before constructing the replacement.
 		# Release the native host as well as its WavePlayer so that switching back
-		# can create a fresh ECI engine immediately.
-		_eloquence.terminate()
+		# can create a fresh ECI engine immediately. A shutdown failure must not
+		# prevent NVDA from switching away from this synth.
+		try:
+			_eloquence.terminate()
+		except Exception:
+			log.exception("Eloquence host shutdown failed")
 		# Do not remove or defer removal of EloquenceSettingsPanel here.  A bound
 		# wx.CallAfter callback keeps this obsolete driver alive and prevents NVDA's
 		# VoiceSettingsPanel weakref from rebuilding its controls for the replacement
