@@ -26,8 +26,11 @@ LOGGER = logging.getLogger(__name__)
 HOST_EXECUTABLE = "eloquence_host32.exe"
 AUTH_KEY_BYTES = 16
 STANDARD_SAMPLE_RATE = 11025
-ENHANCED_SAMPLE_RATE = 22050
-_audio_quality = "standard"
+NATIVE_SAMPLE_RATE = 16000
+PRESENCE_SAMPLE_RATE = 22050
+_sample_rate = STANDARD_SAMPLE_RATE
+_presence_contour = False
+_current_variant = 0
 
 
 # Audio handling -----------------------------------------------------------------
@@ -251,7 +254,7 @@ class EloquenceHostClient:
 	def initialize_audio(self) -> None:
 		if self._player:
 			return
-		sample_rate = ENHANCED_SAMPLE_RATE if _audio_quality == "enhanced" else STANDARD_SAMPLE_RATE
+		sample_rate = get_output_sample_rate()
 		if version_year >= 2025:
 			device = config.conf["audio"]["outputDevice"]
 			player = nvwave.WavePlayer(1, sample_rate, 16, outputDevice=device)
@@ -474,11 +477,13 @@ langs = {
 }  # 0x000A0000
 
 
-def initialize(indexCallback=None):
-	global onIndexReached
+def initialize(indexCallback=None, sample_rate=None):
+	global onIndexReached, _sample_rate, _current_variant
 	eci_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "eloquence", "eci.dll"))
 	try:
 		onIndexReached = indexCallback
+		if sample_rate is not None:
+			_sample_rate = _normalize_sample_rate(sample_rate)
 		voice_conf = config.conf.get("speech", {}).get("eci", {})
 		language = voice_conf.get("voice", "enu")
 		data_directory = os.path.dirname(eci_path)
@@ -492,6 +497,7 @@ def initialize(indexCallback=None):
 			dictionary_profile,
 		)
 		_client.ensure_started()
+		_current_variant = int(voice_conf.get("variant", _current_variant) or 0)
 		payload = {
 			"eciPath": eci_path,
 			"dataDirectory": data_directory,
@@ -502,14 +508,11 @@ def initialize(indexCallback=None):
 			"enablePhrasePrediction": config.conf.get("speech", {})
 			.get("eci", {})
 			.get("phrasePrediction", False),
-			"voiceVariant": int(voice_conf.get("variant", 0) or 0),
+			"voiceVariant": _current_variant,
+			"sampleRate": _sample_rate,
 		}
 		response = _client.send_command("initialize", **payload)
-		# A newly launched host always starts in standard mode, while this
-		# module intentionally retains the selected quality across synth driver
-		# instances. Restore that desired format before opening WavePlayer so
-		# both sides agree when Eloquence is reselected.
-		_client.send_command("setAudioQuality", enhanced=_audio_quality == "enhanced")
+		_client.send_command("setPresenceContour", enabled=_presence_contour)
 		_client.initialize_audio()
 		_ensure_synth_worker()
 	except Exception:
@@ -575,26 +578,68 @@ def close_audio():
 	_client.close_audio()
 
 
-def get_audio_quality():
-	return _audio_quality
+def get_presence_contour():
+	return _presence_contour
 
 
-def set_audio_quality(value):
-	"""Switch between unmodified 11 kHz PCM and enhanced 22 kHz output."""
-	global _audio_quality
-	quality = "enhanced" if value == "enhanced" else "standard"
-	if quality == _audio_quality:
+def get_output_sample_rate():
+	if _sample_rate == STANDARD_SAMPLE_RATE and _presence_contour:
+		return PRESENCE_SAMPLE_RATE
+	return _sample_rate
+
+
+def set_presence_contour(enabled):
+	"""Enable the rate-independent acoustic contour without changing PCM format."""
+	global _presence_contour
+	enabled = bool(enabled)
+	if enabled == _presence_contour:
 		return
-
-	enhanced = quality == "enhanced"
 	if _client._host:
-		# Stop and invalidate queued PCM before changing the host's output format.
 		_client.stop()
-		_client.send_command("setAudioQuality", enhanced=enhanced)
-		_client.close_audio()
-	_audio_quality = quality
-	if _client._host:
+		_client.send_command("setPresenceContour", enabled=enabled)
+		if _sample_rate == STANDARD_SAMPLE_RATE:
+			_client.close_audio()
+	_presence_contour = enabled
+	if _client._host and _sample_rate == STANDARD_SAMPLE_RATE:
 		_client.initialize_audio()
+
+
+def get_sample_rate():
+	return _sample_rate
+
+
+def _normalize_sample_rate(value):
+	rate = int(value)
+	if rate not in (STANDARD_SAMPLE_RATE, NATIVE_SAMPLE_RATE):
+		raise ValueError(f"unsupported Eloquence sample rate: {value}")
+	return rate
+
+
+def set_sample_rate(value):
+	"""Restart ECI into its selected native rate while preserving synth state."""
+	global _sample_rate
+	rate = _normalize_sample_rate(value)
+	if rate == _sample_rate:
+		return
+	was_running = bool(_client._host)
+	saved_params = dict(params)
+	saved_voice_params = dict(voice_params)
+	saved_variant = _current_variant
+	callback = onIndexReached
+	if was_running:
+		_client.stop()
+		_client.shutdown()
+	_sample_rate = rate
+	if not was_running:
+		return
+	initialize(callback, sample_rate=rate)
+	# Restore the live engine state; this prevents a profile-rate change from
+	# silently resetting the user's language, variant, or prosody settings.
+	if 9 in saved_params:
+		set_voice(saved_params[9])
+	setVariant(saved_variant)
+	for parameter, setting in saved_voice_params.items():
+		setVParam(parameter, setting)
 
 
 def set_dictionary_directory(directory, *, reload=False):
@@ -679,8 +724,10 @@ def setVParam(pr, vl, temporary=False):
 
 
 def setVariant(v):
+	global _current_variant
 	try:
-		response = _client.send_command("copyVoice", variant=int(v))
+		_current_variant = int(v)
+		response = _client.send_command("copyVoice", variant=_current_variant)
 		voice_params.update(response.get("voiceParams", {}))
 	except Exception:
 		LOGGER.exception("Failed to set variant")

@@ -22,6 +22,30 @@ class AddonPackagingTests(unittest.TestCase):
 				"v19.1.1-RS-profile-rate-order-test2",
 			)
 
+	def test_untagged_build_uses_19_5_source_hash(self):
+		with (
+			mock.patch.dict(buildVars.os.environ, {}, clear=True),
+			mock.patch.object(
+				buildVars,
+				"_run_git",
+				return_value=mock.Mock(returncode=1, stdout=b""),
+			),
+			mock.patch.object(buildVars, "_get_development_source_hash", return_value="12ab34cd"),
+		):
+			self.assertEqual(buildVars._get_version(), "v19.5-RS-dev-12ab34cd")
+
+	def test_addon_tree_fingerprint_includes_untracked_assets_but_not_manifest(self):
+		with tempfile.TemporaryDirectory() as root:
+			addon = Path(root)
+			(addon / "voice.p16").write_bytes(b"first")
+			first = buildVars._addon_tree_fingerprint(addon)
+			(addon / "voice.p16").write_bytes(b"second")
+			second = buildVars._addon_tree_fingerprint(addon)
+			(addon / "manifest.ini").write_text("generated", encoding="utf-8")
+
+			self.assertNotEqual(first, second)
+			self.assertEqual(second, buildVars._addon_tree_fingerprint(addon))
+
 	def test_nvda_addon_bundle_includes_script_conversion_data(self):
 		with tempfile.TemporaryDirectory() as root:
 			addon_path = Path(root) / "Eloquence-test.nvda-addon"
@@ -38,6 +62,9 @@ class AddonPackagingTests(unittest.TestCase):
 			[name for name in bundled_files if name.endswith("eloquence_host32.exe")],
 			["synthDrivers/eloquence_host32.exe"],
 		)
+		for language in ("DEU", "ENG", "ENU", "ESM", "ESP", "FIN", "FRA", "FRC", "ITA", "PTB", "chs", "jpn", "kor"):
+			with self.subTest(native_patch=language):
+				self.assertIn(f"synthDrivers/eloquence/{language}.p16", bundled_files)
 		for retired_file in (
 			"eloquence_host32_native.exe",
 			"host_eloquence32.py",

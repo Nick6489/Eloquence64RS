@@ -15,6 +15,7 @@ pub struct InitializeConfig {
     pub enable_abbreviation_dictionary: bool,
     pub enable_phrase_prediction: bool,
     pub voice_variant: i32,
+    pub sample_rate: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +31,7 @@ pub enum ClientCommand {
     SetParam { parameter: i32, value: i32 },
     SetVoiceParam { parameter: i32, value: i32 },
     CopyVoice(i32),
-    SetAudioQuality(bool),
+    SetPresenceContour(bool),
     SetDictionaryDirectory { directory: String, reload: bool },
 }
 
@@ -54,6 +55,7 @@ impl ClientCommand {
                 enable_abbreviation_dictionary: payload.get_u8()? != 0,
                 enable_phrase_prediction: payload.get_u8()? != 0,
                 voice_variant: payload.get_i32()?,
+                sample_rate: payload.get_u32()?,
             }),
             MessageKind::BeginGeneration => Self::BeginGeneration(payload.get_u64()?),
             MessageKind::AddText => Self::AddText(payload.get_bytes()?.to_vec()),
@@ -70,7 +72,7 @@ impl ClientCommand {
                 value: payload.get_i32()?,
             },
             MessageKind::CopyVoice => Self::CopyVoice(payload.get_i32()?),
-            MessageKind::SetAudioQuality => Self::SetAudioQuality(payload.get_u8()? != 0),
+            MessageKind::SetPresenceContour => Self::SetPresenceContour(payload.get_u8()? != 0),
             MessageKind::SetDictionaryDirectory => Self::SetDictionaryDirectory {
                 directory: payload.get_string()?.to_owned(),
                 reload: payload.get_u8()? != 0,
@@ -158,6 +160,7 @@ mod tests {
         payload.put_u8(1);
         payload.put_u8(0);
         payload.put_i32(3);
+        payload.put_u32(16_000);
         let frame = Frame::new(MessageKind::Initialize, 4, payload.finish());
 
         assert_eq!(
@@ -171,16 +174,17 @@ mod tests {
                 enable_abbreviation_dictionary: true,
                 enable_phrase_prediction: false,
                 voice_variant: 3,
+                sample_rate: 16_000,
             })
         );
     }
 
     #[test]
-    fn audio_quality_payload_decodes_enhanced_mode() {
-        let frame = Frame::new(MessageKind::SetAudioQuality, 9, vec![1]);
+    fn presence_contour_payload_decodes_enabled_state() {
+        let frame = Frame::new(MessageKind::SetPresenceContour, 9, vec![1]);
         assert_eq!(
             ClientCommand::decode(&frame).unwrap(),
-            ClientCommand::SetAudioQuality(true)
+            ClientCommand::SetPresenceContour(true)
         );
     }
 

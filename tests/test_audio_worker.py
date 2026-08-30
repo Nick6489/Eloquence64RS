@@ -104,9 +104,9 @@ class AudioWorkerTests(unittest.TestCase):
 		)
 		self.assertEqual(module.voice_params[module.rate], 150)
 
-	def test_initialize_restores_enhanced_mode_before_opening_audio(self):
+	def test_initialize_restores_presence_and_rate_before_opening_audio(self):
 		module = _load_client_module()
-		module._audio_quality = "enhanced"
+		module._presence_contour = True
 		module.config.conf = {}
 		client = Mock()
 		client.send_command.side_effect = [
@@ -116,7 +116,7 @@ class AudioWorkerTests(unittest.TestCase):
 		module._client = client
 		module._ensure_synth_worker = Mock()
 
-		module.initialize()
+		module.initialize(sample_rate=16000)
 
 		self.assertEqual(
 			[method[0] for method in client.method_calls],
@@ -129,14 +129,15 @@ class AudioWorkerTests(unittest.TestCase):
 		)
 		self.assertEqual(
 			client.send_command.call_args_list[1],
-			unittest.mock.call("setAudioQuality", enhanced=True),
+			unittest.mock.call("setPresenceContour", enabled=True),
 		)
+		self.assertEqual(client.send_command.call_args_list[0].kwargs["sampleRate"], 16000)
 		self.assertEqual(client.send_command.call_args_list[0].kwargs["dictionaryDirectory"], "")
 		module._ensure_synth_worker.assert_called_once_with()
 
-	def test_enhanced_mode_constructs_22_khz_wave_player(self):
+	def test_native_mode_constructs_16_khz_wave_player(self):
 		module = _load_client_module()
-		module._audio_quality = "enhanced"
+		module._sample_rate = module.NATIVE_SAMPLE_RATE
 		module.config.conf = {"audio": {"outputDevice": "test-device"}}
 		player = Mock()
 		module.nvwave.WavePlayer = Mock(return_value=player)
@@ -148,43 +149,105 @@ class AudioWorkerTests(unittest.TestCase):
 
 		module.nvwave.WavePlayer.assert_called_once_with(
 			1,
-			module.ENHANCED_SAMPLE_RATE,
+			module.NATIVE_SAMPLE_RATE,
 			16,
 			outputDevice="test-device",
 		)
 		module.AudioWorker.assert_called_once_with(player, client._audio_queue, client)
 		worker.start.assert_called_once_with()
 
-	def test_audio_quality_switch_reconfigures_host_and_player(self):
+	def test_classic_presence_switch_reconfigures_player_for_22_khz(self):
 		module = _load_client_module()
+		module._sample_rate = module.STANDARD_SAMPLE_RATE
 		client = Mock()
 		client._host = object()
 		module._client = client
 
-		module.set_audio_quality("enhanced")
+		module.set_presence_contour(True)
 
-		self.assertEqual(module.get_audio_quality(), "enhanced")
+		self.assertTrue(module.get_presence_contour())
 		self.assertEqual(
 			client.method_calls,
 			[
 				unittest.mock.call.stop(),
-				unittest.mock.call.send_command("setAudioQuality", enhanced=True),
+				unittest.mock.call.send_command("setPresenceContour", enabled=True),
 				unittest.mock.call.close_audio(),
 				unittest.mock.call.initialize_audio(),
 			],
 		)
+		self.assertEqual(module.get_output_sample_rate(), module.PRESENCE_SAMPLE_RATE)
 
-	def test_invalid_audio_quality_falls_back_to_standard(self):
+	def test_native_presence_switch_keeps_16_khz_player(self):
 		module = _load_client_module()
-		module._audio_quality = "enhanced"
+		module._sample_rate = module.NATIVE_SAMPLE_RATE
+		client = Mock()
+		client._host = object()
+		module._client = client
+
+		module.set_presence_contour(True)
+
+		self.assertEqual(
+			client.method_calls,
+			[
+				unittest.mock.call.stop(),
+				unittest.mock.call.send_command("setPresenceContour", enabled=True),
+			],
+		)
+		self.assertEqual(module.get_output_sample_rate(), module.NATIVE_SAMPLE_RATE)
+
+	def test_classic_presence_constructs_22_khz_wave_player(self):
+		module = _load_client_module()
+		module._sample_rate = module.STANDARD_SAMPLE_RATE
+		module._presence_contour = True
+		module.config.conf = {"audio": {"outputDevice": "test-device"}}
+		module.nvwave.WavePlayer = Mock()
+		module.AudioWorker = Mock()
+		client = module.EloquenceHostClient()
+
+		client.initialize_audio()
+
+		self.assertEqual(module.nvwave.WavePlayer.call_args.args[:3], (1, 22050, 16))
+
+	def test_invalid_sample_rate_is_rejected(self):
+		module = _load_client_module()
+		module._sample_rate = module.NATIVE_SAMPLE_RATE
 		client = Mock()
 		client._host = None
 		module._client = client
 
-		module.set_audio_quality("unknown")
+		with self.assertRaises(ValueError):
+			module.set_sample_rate("unknown")
 
-		self.assertEqual(module.get_audio_quality(), "standard")
+		self.assertEqual(module.get_sample_rate(), module.NATIVE_SAMPLE_RATE)
 		client.send_command.assert_not_called()
+
+	def test_sample_rate_restart_restores_live_engine_state(self):
+		module = _load_client_module()
+		client = Mock()
+		client._host = object()
+		module._client = client
+		module._sample_rate = module.STANDARD_SAMPLE_RATE
+		module._current_variant = 4
+		module.onIndexReached = Mock()
+		module.params.clear()
+		module.params[9] = 262144
+		module.voice_params.clear()
+		module.voice_params.update({module.pitch: 63, module.rate: 171})
+		module.initialize = Mock()
+		module.set_voice = Mock()
+		module.setVariant = Mock()
+		module.setVParam = Mock()
+
+		module.set_sample_rate(module.NATIVE_SAMPLE_RATE)
+
+		self.assertEqual(client.method_calls, [unittest.mock.call.stop(), unittest.mock.call.shutdown()])
+		module.initialize.assert_called_once_with(module.onIndexReached, sample_rate=16000)
+		module.set_voice.assert_called_once_with(262144)
+		module.setVariant.assert_called_once_with(4)
+		self.assertEqual(
+			module.setVParam.call_args_list,
+			[unittest.mock.call(module.pitch, 63), unittest.mock.call(module.rate, 171)],
+		)
 
 	def test_builtin_dictionary_switch_stops_speech_and_sends_empty_directory(self):
 		module = _load_client_module()

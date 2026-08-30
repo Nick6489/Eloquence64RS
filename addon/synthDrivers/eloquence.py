@@ -146,7 +146,8 @@ _PROFILE_SETTING_IDS = (
 	"ABRDICT",
 	"phrasePrediction",
 	"pauseMode",
-	"audioQuality",
+	"sampleRate",
+	"presenceContour",
 )
 _BOOLEAN_PROFILE_SETTING_IDS = frozenset(("backquoteVoiceTags", "ABRDICT", "phrasePrediction"))
 _INTEGER_PROFILE_SETTING_IDS = frozenset(("rate", "pitch", "inflection", "volume", "hsz", "rgh", "bth"))
@@ -168,7 +169,15 @@ def _eloquence_settings_from(conf):
 		settings = conf["speech"]["eloquence"]
 	except (KeyError, TypeError):
 		return {}
-	return {setting_id: settings[setting_id] for setting_id in _PROFILE_SETTING_IDS if setting_id in settings}
+	result = {setting_id: settings[setting_id] for setting_id in _PROFILE_SETTING_IDS if setting_id in settings}
+	if "presenceContour" in result:
+		result["presenceContour"] = _coerce_presence_contour_setting(result["presenceContour"])
+	elif "audioQuality" in settings:
+		# audioQuality is deliberately not a supported setting anymore. Keeping it
+		# outside NVDA's Boolean config spec lets old standard/enhanced values load
+		# far enough for us to migrate them safely.
+		result["presenceContour"] = _coerce_presence_contour_setting(settings["audioQuality"])
+	return result
 
 
 def _coerce_boolean_setting(value):
@@ -177,7 +186,59 @@ def _coerce_boolean_setting(value):
 	return bool(value)
 
 
+def _coerce_presence_contour_setting(value):
+	"""Accept both the former quality values and the new checkbox values."""
+	if isinstance(value, str):
+		normalized = value.strip().casefold()
+		if normalized == "enhanced":
+			return True
+		if normalized == "standard":
+			return False
+	return _coerce_boolean_setting(value)
+
+
+def _coerce_sample_rate_setting(value):
+	value = str(value).strip()
+	return "16000" if value in {"16000", "2", "native16"} else "11025"
+
+
+def _ensure_sample_rate_config_default():
+	"""Make an upgraded pre-19.5 synth section safe for NVDA's generic loader."""
+	try:
+		configured_settings = config.conf["speech"]["eloquence"]
+	except (KeyError, TypeError):
+		return
+	try:
+		configured_settings["sampleRate"]
+		return
+	except KeyError:
+		pass
+
+	# Prefer the base raw profile so named profiles continue to inherit the
+	# default instead of gaining an unnecessary explicit override.
+	profiles = getattr(config.conf, "profiles", ())
+	if profiles:
+		try:
+			base_settings = profiles[0]["speech"]["eloquence"]
+			if "sampleRate" not in base_settings:
+				base_settings["sampleRate"] = "11025"
+		except (KeyError, TypeError):
+			pass
+
+	# ConfigManager normally reflects the base write immediately. Keep a direct
+	# fallback for startup-time aggregated sections whose cache is already built.
+	try:
+		configured_settings = config.conf["speech"]["eloquence"]
+		configured_settings["sampleRate"]
+	except (KeyError, TypeError):
+		configured_settings["sampleRate"] = "11025"
+
+
 def _coerce_raw_profile_setting(setting_id, value):
+	if setting_id == "presenceContour":
+		return _coerce_presence_contour_setting(value)
+	if setting_id == "sampleRate":
+		return _coerce_sample_rate_setting(value)
 	if setting_id in _BOOLEAN_PROFILE_SETTING_IDS:
 		return _coerce_boolean_setting(value)
 	if setting_id in _INTEGER_PROFILE_SETTING_IDS:
@@ -209,6 +270,10 @@ def _eloquence_settings_from_profile_layers(profiles):
 						profile_settings[setting_id],
 						getattr(profile, "name", None),
 					)
+		# A value explicitly stored under the new key wins within this layer.
+		# Otherwise, translate the old choice value into the new checkbox value.
+		if "presenceContour" not in profile_settings and "audioQuality" in profile_settings:
+			settings["presenceContour"] = _coerce_presence_contour_setting(profile_settings["audioQuality"])
 	return settings
 
 
@@ -400,7 +465,10 @@ def _ensure_profile_isolation_handler():
 	global _current_profile_stack, _profile_switch_handler_registered
 	if _current_profile_stack is None:
 		_current_profile_stack = _active_profile_stack()
-		_profile_settings_by_stack[_current_profile_stack] = _eloquence_settings_from(config.conf)
+		# loadSettings captures raw layers before NVDA validates and injects
+		# defaults. Do not replace that migration-safe snapshot with the merged
+		# view, which may already contain a default presenceContour=False.
+		_profile_settings_by_stack.setdefault(_current_profile_stack, _eloquence_settings_from(config.conf))
 	if not _profile_switch_handler_registered:
 		# This handler deliberately lives for the lifetime of the loaded module.
 		# Unregistering it from SynthDriver.terminate would mutate NVDA's Action
@@ -957,8 +1025,10 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		BooleanDriverSetting("phrasePrediction", _("Enable phras&e prediction"), False),
 		# Translators: A synth setting available in speech settings dialog
 		DriverSetting("pauseMode", _("Shorten &pauses"), defaultVal="0"),
-		# Translators: A synth setting available in speech settings dialog
-		DriverSetting("audioQuality", _("Audio &quality"), defaultVal="standard"),
+		# Translators: Selects Eloquence's native synthesis sample rate.
+		DriverSetting("sampleRate", _("Sample &rate"), defaultVal="11025"),
+		# Translators: A checkbox that applies Eloquence64RS's optional tonal contour.
+		BooleanDriverSetting("presenceContour", _("Presence &contour"), False),
 	)
 	supportedCommands = {
 		IndexCommand,
@@ -982,7 +1052,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	# Initialize _pause_mode at class level to prevent issues with setting restoration
 	_pause_mode = 0
-	_audioQuality = "standard"
+	_sampleRate = "11025"
+	_presenceContour = False
 
 	@classmethod
 	def check(cls):
@@ -1012,7 +1083,11 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 		try:
 			log.info("Eloquence: Starting initialization")
-			_eloquence.initialize(self._onIndexReached)
+			configured_rate = _coerce_sample_rate_setting(
+				config.conf.get("speech", {}).get("eloquence", {}).get("sampleRate", "11025")
+			)
+			self._sampleRate = configured_rate
+			_eloquence.initialize(self._onIndexReached, sample_rate=int(configured_rate))
 			log.info("Eloquence: _eloquence.initialize completed successfully")
 		except Exception as e:
 			log.error(f"Eloquence: Failed to initialize _eloquence module: {e}", exc_info=True)
@@ -1074,6 +1149,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		# raw ConfigObj layers already identify the incoming profile correctly, so
 		# capture them before calling NVDA's loader for the first time this session.
 		_capture_unseen_active_profile(active_stack)
+		_ensure_sample_rate_config_default()
 		# Named profiles must be copied even earlier than their first activation.
 		# NVDA can mutate the incoming profile layer before constructing this new
 		# driver, so preload clean copies while the initial profile is still stable.
@@ -1298,6 +1374,24 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		# Translators: An option in the "Shorten pauses" combo box in speech settings
 		"2": StringParameterInfo("2", _("Always")),
 	}
+	_sampleRates = {
+		"11025": StringParameterInfo("11025", _("11.025 kHz")),
+		"16000": StringParameterInfo("16000", _("16 kHz")),
+	}
+
+	def _get_availableSamplerates(self):
+		return self._sampleRates
+
+	def _set_sampleRate(self, value):
+		value = _coerce_sample_rate_setting(value)
+		if value == self._sampleRate:
+			return
+		_eloquence.set_sample_rate(int(value))
+		self._sampleRate = value
+		_remember_current_profile_setting(self, "sampleRate", value)
+
+	def _get_sampleRate(self):
+		return self._sampleRate
 
 	def _get_availablePausemodes(self):
 		return self._pauseModes
@@ -1309,27 +1403,16 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _get_pauseMode(self):
 		return str(self._pause_mode)
 
-	_audioQualityOptions = {
-		# Translators: An option in the "Audio quality" combo box in speech settings.
-		"standard": StringParameterInfo("standard", _("Standard 11 kHz")),
-		# Translators: An option in the "Audio quality" combo box in speech settings.
-		"enhanced": StringParameterInfo("enhanced", _("Enhanced 22 kHz")),
-	}
-
-	def _get_availableAudioqualitys(self):
-		# NVDA constructs this property name with setting.id.capitalize() + "s".
-		return self._audioQualityOptions
-
-	def _set_audioQuality(self, value):
-		quality = "enhanced" if value == "enhanced" else "standard"
-		if quality == self._audioQuality:
+	def _set_presenceContour(self, value):
+		enabled = _coerce_presence_contour_setting(value)
+		if enabled == self._presenceContour:
 			return
-		_eloquence.set_audio_quality(quality)
-		self._audioQuality = quality
-		_remember_current_profile_setting(self, "audioQuality", quality)
+		_eloquence.set_presence_contour(enabled)
+		self._presenceContour = enabled
+		_remember_current_profile_setting(self, "presenceContour", enabled)
 
-	def _get_audioQuality(self):
-		return self._audioQuality
+	def _get_presenceContour(self):
+		return self._presenceContour
 
 	_backquoteVoiceTags = False
 	_ABRDICT = False

@@ -45,8 +45,12 @@ host_exe = addonDir / "synthDrivers" / "eloquence_host32.exe"
 required_proprietary = [eci_dir / "ECI.DLL"] + [
 	eci_dir / f"{name}.SYN" for name in ("DEU", "ENG", "ENU", "ESM", "ESP", "FIN", "FRA", "FRC", "ITA", "PTB")
 ]
+required_native_patches = [
+	eci_dir / f"{name}.p16"
+	for name in ("DEU", "ENG", "ENU", "ESM", "ESP", "FIN", "FRA", "FRC", "ITA", "PTB", "chs", "jpn", "kor")
+]
 
-missing = [str(p) for p in required_proprietary if not p.exists()]
+missing = [str(p) for p in required_proprietary + required_native_patches if not p.exists()]
 if missing:
 	print(
 		"ERROR: Missing proprietary Eloquence files:\n  "

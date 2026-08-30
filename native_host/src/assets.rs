@@ -30,6 +30,9 @@ pub enum AssetError {
     MissingIni(PathBuf),
     Io(std::io::Error),
     IniHasNoPaths,
+    MissingDataFile(PathBuf),
+    MissingPatch(PathBuf),
+    InvalidPatch { path: PathBuf, reason: String },
 }
 
 impl fmt::Display for AssetError {
@@ -41,6 +44,19 @@ impl fmt::Display for AssetError {
             Self::MissingIni(path) => write!(formatter, "ECI.INI is missing: {}", path.display()),
             Self::Io(error) => write!(formatter, "failed to prepare ECI assets: {error}"),
             Self::IniHasNoPaths => write!(formatter, "ECI.INI contains no voice data paths"),
+            Self::MissingDataFile(path) => {
+                write!(formatter, "ECI data file is missing: {}", path.display())
+            }
+            Self::MissingPatch(path) => write!(
+                formatter,
+                "native 16 kHz patch is missing: {}",
+                path.display()
+            ),
+            Self::InvalidPatch { path, reason } => write!(
+                formatter,
+                "invalid native 16 kHz patch {}: {reason}",
+                path.display()
+            ),
         }
     }
 }
@@ -59,7 +75,11 @@ pub struct PreparedEci {
 }
 
 impl PreparedEci {
-    pub fn create(source_dll: &Path, data_directory: &Path) -> Result<Self, AssetError> {
+    pub fn create(
+        source_dll: &Path,
+        data_directory: &Path,
+        native_16khz: bool,
+    ) -> Result<Self, AssetError> {
         let source_directory = source_dll
             .parent()
             .ok_or(AssetError::MissingParentDirectory)?;
@@ -78,7 +98,13 @@ impl PreparedEci {
         ));
         fs::create_dir(&directory)?;
 
-        let result = Self::populate(&directory, source_dll, &source_ini, data_directory);
+        let result = Self::populate(
+            &directory,
+            source_dll,
+            &source_ini,
+            data_directory,
+            native_16khz,
+        );
         if let Err(error) = result {
             let _ = fs::remove_dir_all(&directory);
             return Err(error);
@@ -94,11 +120,40 @@ impl PreparedEci {
         source_dll: &Path,
         source_ini: &Path,
         data_directory: &Path,
+        native_16khz: bool,
     ) -> Result<(), AssetError> {
         fs::copy(source_dll, directory.join("ECI.DLL"))?;
         let ini = fs::read_to_string(source_ini)?;
-        let data_directory = short_path(data_directory);
-        let patched = reanchor_ini_paths(&ini, &data_directory).ok_or(AssetError::IniHasNoPaths)?;
+        let filenames = referenced_filenames(&ini);
+        if filenames.is_empty() {
+            return Err(AssetError::IniHasNoPaths);
+        }
+        for filename in &filenames {
+            let source = data_directory.join(filename);
+            if !source.is_file() {
+                return Err(AssetError::MissingDataFile(source));
+            }
+            let destination = directory.join(filename);
+            fs::copy(&source, &destination)?;
+            if native_16khz
+                && destination
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("syn"))
+            {
+                let patch_name = Path::new(filename).with_extension("p16");
+                let patch_path = data_directory.join(patch_name);
+                if !patch_path.is_file() {
+                    return Err(AssetError::MissingPatch(patch_path));
+                }
+                let original = fs::read(&destination)?;
+                let patch = fs::read(&patch_path)?;
+                let transformed = apply_p16(&original, &patch, &patch_path)?;
+                fs::write(destination, transformed)?;
+            }
+        }
+        let staged_directory = short_path(directory);
+        let patched =
+            reanchor_ini_paths(&ini, &staged_directory).ok_or(AssetError::IniHasNoPaths)?;
         fs::write(directory.join("ECI.INI"), patched)?;
         Ok(())
     }
@@ -106,6 +161,109 @@ impl PreparedEci {
     pub fn dll_path(&self) -> &Path {
         &self.dll_path
     }
+}
+
+fn referenced_filenames(ini: &str) -> Vec<String> {
+    let mut filenames = Vec::new();
+    for line in ini.lines() {
+        let Some(equals) = line.find('=') else {
+            continue;
+        };
+        let key = line[..equals].trim();
+        if !key.eq_ignore_ascii_case("Path") && !key.eq_ignore_ascii_case("Path_Rom") {
+            continue;
+        }
+        if let Some(filename) = line[equals + 1..]
+            .trim()
+            .rsplit(['\\', '/'])
+            .next()
+            .filter(|name| !name.is_empty())
+        {
+            if !filenames
+                .iter()
+                .any(|known: &String| known.eq_ignore_ascii_case(filename))
+            {
+                filenames.push(filename.to_owned());
+            }
+        }
+    }
+    filenames
+}
+
+fn apply_p16(original: &[u8], patch: &[u8], path: &Path) -> Result<Vec<u8>, AssetError> {
+    let invalid = |reason: String| AssetError::InvalidPatch {
+        path: path.to_owned(),
+        reason,
+    };
+    if patch.get(..4) != Some(b"P16D") {
+        return Err(invalid("bad magic".to_owned()));
+    }
+    let mut cursor = 4;
+    let original_size = read_patch_u32(patch, &mut cursor)
+        .ok_or_else(|| invalid("truncated header".to_owned()))? as usize;
+    let new_size = read_patch_u32(patch, &mut cursor)
+        .ok_or_else(|| invalid("truncated header".to_owned()))? as usize;
+    let run_count = read_patch_u32(patch, &mut cursor)
+        .ok_or_else(|| invalid("truncated header".to_owned()))? as usize;
+    if original.len() != original_size {
+        return Err(invalid(format!(
+            "source size is {}, expected {original_size}",
+            original.len()
+        )));
+    }
+    let mut result = Vec::with_capacity(new_size);
+    let mut source_cursor = 0usize;
+    for _ in 0..run_count {
+        let offset = read_patch_u32(patch, &mut cursor)
+            .ok_or_else(|| invalid("truncated run".to_owned()))? as usize;
+        let old_len = read_patch_u32(patch, &mut cursor)
+            .ok_or_else(|| invalid("truncated run".to_owned()))? as usize;
+        let new_len = read_patch_u32(patch, &mut cursor)
+            .ok_or_else(|| invalid("truncated run".to_owned()))? as usize;
+        if offset < source_cursor
+            || offset
+                .checked_add(old_len)
+                .is_none_or(|end| end > original.len())
+        {
+            return Err(invalid("run is outside or overlaps the source".to_owned()));
+        }
+        let old_end = cursor
+            .checked_add(old_len)
+            .ok_or_else(|| invalid("run length overflow".to_owned()))?;
+        let new_end = old_end
+            .checked_add(new_len)
+            .ok_or_else(|| invalid("run length overflow".to_owned()))?;
+        if new_end > patch.len() {
+            return Err(invalid("truncated run data".to_owned()));
+        }
+        if original[offset..offset + old_len] != patch[cursor..old_end] {
+            return Err(invalid(format!(
+                "source bytes do not match at offset {offset}"
+            )));
+        }
+        result.extend_from_slice(&original[source_cursor..offset]);
+        result.extend_from_slice(&patch[old_end..new_end]);
+        source_cursor = offset + old_len;
+        cursor = new_end;
+    }
+    if cursor != patch.len() {
+        return Err(invalid("trailing patch data".to_owned()));
+    }
+    result.extend_from_slice(&original[source_cursor..]);
+    if result.len() != new_size {
+        return Err(invalid(format!(
+            "result size is {}, expected {new_size}",
+            result.len()
+        )));
+    }
+    Ok(result)
+}
+
+fn read_patch_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
+    let end = cursor.checked_add(4)?;
+    let value = u32::from_le_bytes(bytes.get(*cursor..end)?.try_into().ok()?);
+    *cursor = end;
+    Some(value)
 }
 
 fn reanchor_ini_paths(ini: &str, data_directory: &Path) -> Option<String> {
@@ -224,11 +382,13 @@ mod tests {
         fs::write(source.join("ECI.DLL"), b"not a real dll").unwrap();
         let original = "[1.0]\nPath=C:\\dummy\\enu.syn\n";
         fs::write(source.join("ECI.INI"), original).unwrap();
+        fs::write(data.join("enu.syn"), b"voice data").unwrap();
 
-        let prepared = PreparedEci::create(&source.join("ECI.DLL"), &data).unwrap();
+        let prepared = PreparedEci::create(&source.join("ECI.DLL"), &data, false).unwrap();
         let patched = fs::read_to_string(prepared.dll_path().with_file_name("ECI.INI")).unwrap();
         assert!(!patched.contains(r"C:\dummy\"));
-        assert!(patched.contains(&short_path(&data).display().to_string()));
+        let staged = prepared.dll_path().parent().unwrap();
+        assert!(patched.contains(&short_path(staged).display().to_string()));
         assert_eq!(
             fs::read_to_string(source.join("ECI.INI")).unwrap(),
             original
@@ -255,14 +415,42 @@ mod tests {
             "[1.0]\r\nPath=C:\\old-install\\enu.syn\r\nPath_Rom=C:\\old-install\\jpnrom.dll\r\n",
         )
         .unwrap();
+        fs::write(data.join("enu.syn"), b"voice data").unwrap();
+        fs::write(data.join("jpnrom.dll"), b"rom data").unwrap();
 
-        let prepared = PreparedEci::create(&source.join("ECI.DLL"), &data).unwrap();
+        let prepared = PreparedEci::create(&source.join("ECI.DLL"), &data, false).unwrap();
         let patched = fs::read_to_string(prepared.dll_path().with_file_name("ECI.INI")).unwrap();
-        let expected_root = short_path(&data).display().to_string();
+        let expected_root = short_path(prepared.dll_path().parent().unwrap())
+            .display()
+            .to_string();
         assert!(patched.contains(&format!("Path={expected_root}\\enu.syn")));
         assert!(patched.contains(&format!("Path_Rom={expected_root}\\jpnrom.dll")));
 
         drop(prepared);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_patch_is_validated_and_applied_only_to_staged_copy() {
+        let original = b"abcdefgh";
+        let mut patch = b"P16D".to_vec();
+        patch.extend_from_slice(&(original.len() as u32).to_le_bytes());
+        patch.extend_from_slice(&10_u32.to_le_bytes());
+        patch.extend_from_slice(&1_u32.to_le_bytes());
+        patch.extend_from_slice(&2_u32.to_le_bytes());
+        patch.extend_from_slice(&2_u32.to_le_bytes());
+        patch.extend_from_slice(&4_u32.to_le_bytes());
+        patch.extend_from_slice(b"cd");
+        patch.extend_from_slice(b"WXYZ");
+        assert_eq!(
+            apply_p16(original, &patch, Path::new("enu.p16")).unwrap(),
+            b"abWXYZefgh"
+        );
+        let mut incompatible = original.to_vec();
+        incompatible[2] = b'!';
+        assert!(matches!(
+            apply_p16(&incompatible, &patch, Path::new("enu.p16")),
+            Err(AssetError::InvalidPatch { .. })
+        ));
     }
 }

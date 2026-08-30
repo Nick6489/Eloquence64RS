@@ -186,7 +186,8 @@ class _EloquenceStub(types.ModuleType):
 		self.stopped = False
 		self.processed = False
 		self.immediate_calls = []
-		self.audio_quality_calls = []
+		self.presence_contour_calls = []
+		self.sample_rate_calls = []
 		self.terminated = False
 
 	def cmdProsody(self, *args):
@@ -211,8 +212,11 @@ class _EloquenceStub(types.ModuleType):
 	def stop(self):
 		self.stopped = True
 
-	def set_audio_quality(self, quality):
-		self.audio_quality_calls.append(quality)
+	def set_presence_contour(self, enabled):
+		self.presence_contour_calls.append(bool(enabled))
+
+	def set_sample_rate(self, rate):
+		self.sample_rate_calls.append(int(rate))
 
 	def getVParam(self, param):
 		return self.voice_params.get(param, 0)
@@ -300,7 +304,8 @@ def _new_driver(module):
 	driver._lastEngineVoice = "262144"
 	driver._languageOverrideActive = False
 	driver._pause_mode = 1
-	driver._audioQuality = "standard"
+	driver._sampleRate = "11025"
+	driver._presenceContour = False
 	driver._backquoteVoiceTags = False
 	driver._ABRDICT = False
 	driver._phrasePrediction = False
@@ -402,24 +407,117 @@ class LanguageScopeTests(unittest.TestCase):
 		self.assertEqual(section["dictionary_profile"], profile)
 		self.assertIn("dictionary_name", section.values)
 
-	def test_audio_quality_setting_exposes_standard_and_enhanced_modes(self):
+	def test_presence_contour_uses_a_new_boolean_schema_key(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+
+		setting_ids = [setting.id for setting in module.SynthDriver.supportedSettings]
+		self.assertIn("presenceContour", setting_ids)
+		self.assertIn("sampleRate", setting_ids)
+		self.assertNotIn("audioQuality", setting_ids)
+
+	def test_presence_contour_setting_updates_backend_once(self):
+		module, eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+
+		driver._set_presenceContour(True)
+		driver._set_presenceContour(True)
+
+		self.assertIs(driver._get_presenceContour(), True)
+		self.assertEqual(eloquence_stub.presence_contour_calls, [True])
+
+	def test_native_sample_rate_setting_updates_backend_once(self):
+		module, eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+
+		driver._set_sampleRate("16000")
+		driver._set_sampleRate("16000")
+
+		self.assertEqual(driver._get_sampleRate(), "16000")
+		self.assertEqual(eloquence_stub.sample_rate_calls, [16000])
+
+	def test_sample_rate_exposes_the_property_name_nvda_requests(self):
 		module, _eloquence_stub, _preprocess_calls = _load_driver()
 		driver = _new_driver(module)
 
 		self.assertEqual(
-			list(driver._get_availableAudioqualitys()),
-			["standard", "enhanced"],
+			driver._get_availableSamplerates(),
+			module.SynthDriver._sampleRates,
+		)
+		self.assertFalse(hasattr(module.SynthDriver, "_get_availableSampleRates"))
+		self.assertEqual(
+			[option.label for option in driver._get_availableSamplerates().values()],
+			["11.025 kHz", "16 kHz"],
 		)
 
-	def test_audio_quality_setting_updates_backend_once(self):
-		module, eloquence_stub, _preprocess_calls = _load_driver()
-		driver = _new_driver(module)
+	def test_profile_snapshot_coerces_legacy_audio_quality_values(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		profiles = [{"speech": {"eloquence": {"audioQuality": "enhanced"}}}]
 
-		driver._set_audioQuality("enhanced")
-		driver._set_audioQuality("enhanced")
+		self.assertEqual(
+			module._eloquence_settings_from_profile_layers(profiles),
+			{"presenceContour": True},
+		)
 
-		self.assertEqual(driver._get_audioQuality(), "enhanced")
-		self.assertEqual(eloquence_stub.audio_quality_calls, ["enhanced"])
+	def test_new_presence_contour_value_wins_over_legacy_value_in_same_profile(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		profiles = [
+			{
+				"speech": {
+					"eloquence": {
+						"audioQuality": "enhanced",
+						"presenceContour": False,
+					},
+				},
+			},
+		]
+
+		self.assertEqual(
+			module._eloquence_settings_from_profile_layers(profiles),
+			{"presenceContour": False},
+		)
+
+	def test_named_legacy_value_overrides_base_presence_contour(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		profiles = [
+			{"speech": {"eloquence": {"presenceContour": False}}},
+			{"speech": {"eloquence": {"audioQuality": "enhanced"}}},
+		]
+
+		self.assertEqual(
+			module._eloquence_settings_from_profile_layers(profiles),
+			{"presenceContour": True},
+		)
+
+	def test_initialization_keeps_legacy_value_captured_before_boolean_default(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		base_profile = {
+			"speech": {
+				"eloquence": {
+					"audioQuality": "enhanced",
+				},
+			},
+		}
+		module.config.conf = _ConfigRoot(
+			{
+				"speech": {
+					"eloquence": {
+						"audioQuality": "enhanced",
+						# Model the default NVDA may cache while loading settings.
+						"presenceContour": False,
+					},
+				},
+			},
+			profiles=[base_profile],
+		)
+		stack = ("normal configuration",)
+
+		module._capture_unseen_active_profile(stack)
+		module._ensure_profile_isolation_handler()
+
+		self.assertEqual(
+			module._profile_settings_by_stack[stack]["presenceContour"],
+			True,
+		)
 
 	def test_system_config_host_hash_match_is_not_a_mismatch(self):
 		module, _eloquence_stub, _preprocess_calls = _load_driver()
@@ -559,6 +657,31 @@ class LanguageScopeTests(unittest.TestCase):
 		self.assertEqual(driver.settings_lifecycle_events, ["dictionary", "settings"])
 		active_directory.assert_called_once_with("C:\\", "community")
 		eloquence_stub.set_dictionary_directory.assert_called_once_with(r"C:\dictionaries\community")
+
+	def test_upgrade_seeds_missing_sample_rate_before_nvda_loads_settings(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+		driver = _new_driver(module)
+		base = {"speech": {"eloquence": {"rate": 64}}}
+		module.config.conf = _ConfigRoot(
+			{"speech": {"eloquence": {"rate": 64}}, "eloquence": {}},
+			profiles=[base],
+		)
+
+		def nvda_generic_loader(_instance, onlyChanged=False):
+			self.assertEqual(
+				module.config.conf["speech"]["eloquence"]["sampleRate"],
+				"11025",
+			)
+
+		with mock.patch.object(
+			_SynthBase,
+			"loadSettings",
+			autospec=True,
+			side_effect=nvda_generic_loader,
+		):
+			driver.loadSettings(onlyChanged=False)
+
+		self.assertEqual(base["speech"]["eloquence"]["sampleRate"], "11025")
 
 	def test_profile_snapshot_restores_incoming_engine_and_repairs_config(self):
 		module, eloquence_stub, _preprocess_calls = _load_driver()

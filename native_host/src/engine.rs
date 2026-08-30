@@ -1,7 +1,7 @@
 //! Safe ownership and callback handling around the dynamically loaded ECI API.
 
 use crate::assets::system_ansi_path;
-use crate::audio::{AudioProcessor, AudioQuality};
+use crate::audio::{AudioProcessor, PresenceContour};
 use crate::dictionaries;
 use crate::eci::{EciApi, EciCallbackReturn, EciDictionaryHandle, EciHandle, EciStop};
 use crate::progress::{ProgressEvent, ProgressTracker, FINAL_INDEX};
@@ -267,6 +267,7 @@ impl EciEngine {
     pub fn new(
         api: EciApi,
         language_id: i32,
+        sample_rate: u32,
         events: SyncSender<EngineEvent>,
     ) -> Result<Self, EngineError> {
         let handle = unsafe { (api.new_ex)(language_id) };
@@ -276,7 +277,7 @@ impl EciEngine {
 
         let mut callback_context = Box::new(CallbackContext {
             output_buffer: vec![0_i16; DEFAULT_BUFFER_SAMPLES].into_boxed_slice(),
-            audio_processor: Mutex::new(AudioProcessor::default()),
+            audio_processor: Mutex::new(AudioProcessor::new(sample_rate)),
             progress: Mutex::new(ProgressTracker::default()),
             events,
             cancellation_requested: Arc::new(AtomicBool::new(false)),
@@ -329,12 +330,12 @@ impl EciEngine {
             .reset();
     }
 
-    pub fn set_audio_quality(&self, quality: AudioQuality) {
+    pub fn set_presence_contour(&self, contour: PresenceContour) {
         self.callback_context
             .audio_processor
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .set_quality(quality);
+            .set_contour(contour);
     }
 
     pub fn add_text(&self, text: &[u8]) -> Result<(), EngineError> {
@@ -600,14 +601,14 @@ mod tests {
     }
 
     #[test]
-    fn audio_callback_emits_two_samples_per_input_in_enhanced_mode() {
+    fn audio_callback_resamples_classic_presence_contour() {
         let (context, receiver) = context();
         context.progress.lock().unwrap().begin(8);
         context
             .audio_processor
             .lock()
             .unwrap()
-            .set_quality(AudioQuality::Enhanced);
+            .set_contour(PresenceContour::Enabled);
         assert_eq!(
             handle_audio_callback(&context, 3),
             EciCallbackReturn::Processed
@@ -687,7 +688,7 @@ mod tests {
         let api = EciApi::load(OsStr::new(&test_dll)).unwrap();
         let (sender, receiver) = mpsc::sync_channel(64);
         {
-            let engine = EciEngine::new(api, 65_536, sender).unwrap();
+            let engine = EciEngine::new(api, 65_536, 11_025, sender).unwrap();
             engine.set_param(1, 1); // annotated input
             engine.begin_generation(77);
             engine.add_text(b"Native Eloquence host test.").unwrap();

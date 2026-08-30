@@ -1,7 +1,7 @@
 //! Single-client host server over inherited stdin/stdout pipes.
 
 use crate::assets::PreparedEci;
-use crate::audio::AudioQuality;
+use crate::audio::PresenceContour;
 use crate::eci::EciApi;
 use crate::engine::{EciEngine, EngineEvent, StopController};
 use crate::protocol::{Frame, MessageKind, ProtocolError, AUTH_KEY_LEN};
@@ -19,6 +19,7 @@ const ECI_INPUT_TYPE: i32 = 1;
 const ECI_LANGUAGE_DIALECT: i32 = 9;
 const ECI_ABBREVIATION_DICTIONARY: i32 = 41;
 const ECI_PHRASE_PREDICTION: i32 = 42;
+const ECI_SAMPLE_RATE: i32 = 5;
 
 #[derive(Debug)]
 pub enum ServerError {
@@ -76,12 +77,22 @@ impl Runtime {
         } else {
             Some(PathBuf::from(&config.dictionary_directory))
         };
-        let assets = PreparedEci::create(Path::new(&config.eci_path), &data_directory)
-            .map_err(|error| error.to_string())?;
+        let eci_rate_value = match config.sample_rate {
+            11_025 => 1,
+            16_000 => 2,
+            rate => return Err(format!("unsupported Eloquence sample rate: {rate}")),
+        };
+        let assets = PreparedEci::create(
+            Path::new(&config.eci_path),
+            &data_directory,
+            config.sample_rate == 16_000,
+        )
+        .map_err(|error| error.to_string())?;
         let api = EciApi::load(assets.dll_path().as_os_str()).map_err(|error| error.to_string())?;
-        let mut engine =
-            EciEngine::new(api, config.language_id, events).map_err(|error| error.to_string())?;
+        let mut engine = EciEngine::new(api, config.language_id, config.sample_rate, events)
+            .map_err(|error| error.to_string())?;
         engine.set_param(ECI_INPUT_TYPE, 1);
+        engine.set_param(ECI_SAMPLE_RATE, eci_rate_value);
         engine.set_param(
             ECI_ABBREVIATION_DICTIONARY,
             i32::from(config.enable_abbreviation_dictionary),
@@ -151,13 +162,13 @@ impl Runtime {
                 self.engine.copy_voice(variant);
                 Ok(self.state_payload())
             }
-            ClientCommand::SetAudioQuality(enhanced) => {
-                let quality = if enhanced {
-                    AudioQuality::Enhanced
+            ClientCommand::SetPresenceContour(enabled) => {
+                let contour = if enabled {
+                    PresenceContour::Enabled
                 } else {
-                    AudioQuality::Standard
+                    PresenceContour::Disabled
                 };
-                self.engine.set_audio_quality(quality);
+                self.engine.set_presence_contour(contour);
                 Ok(Vec::new())
             }
             ClientCommand::SetDictionaryDirectory { directory, reload } => {

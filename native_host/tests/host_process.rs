@@ -40,6 +40,11 @@ fn process_synthesizes_real_pcm_over_authenticated_stdio() {
     };
     let eci_path = std::path::PathBuf::from(eci_path);
     let data_directory = eci_path.parent().unwrap();
+    let sample_rate = std::env::var("ELOQUENCE_TEST_SAMPLE_RATE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(11_025);
+    let presence_contour = std::env::var_os("ELOQUENCE_TEST_PRESENCE").is_some();
     let key = [0x5a; AUTH_KEY_LEN];
     let key_hex = key
         .iter()
@@ -77,11 +82,20 @@ fn process_synthesizes_real_pcm_over_authenticated_stdio() {
     payload.put_u8(1);
     payload.put_u8(1);
     payload.put_i32(0);
+    payload.put_u32(sample_rate);
     send(
         &mut writer,
         Frame::new(MessageKind::Initialize, 2, payload.finish()),
     );
     await_response(&mut reader, 2);
+
+    let mut payload = PayloadWriter::new();
+    payload.put_u8(u8::from(presence_contour));
+    send(
+        &mut writer,
+        Frame::new(MessageKind::SetPresenceContour, 15, payload.finish()),
+    );
+    await_response(&mut reader, 15);
 
     let mut payload = PayloadWriter::new();
     payload.put_u64(9001);

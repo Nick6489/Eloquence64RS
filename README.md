@@ -51,26 +51,33 @@ synth driver launches it and exchanges authenticated, versioned frames over the
 child's standard-input and standard-output pipes. No helper interpreter,
 listening socket, or host-selection environment variable is used.
 
-The host creates a private staged copy of the Eloquence DLL and `ECI.INI` for
-each run. It re-anchors `Path=` and `Path_Rom=` entries in that private copy, so
-the installed configuration is never rewritten. If the executable cannot
+The host creates a private staged copy of the Eloquence DLL, `ECI.INI`, and
+referenced voice data for each run. It re-anchors `Path=` and `Path_Rom=`
+entries in that private copy, so the installed configuration is never
+rewritten. If the executable cannot
 start, authenticate, or initialize ECI, synth initialization fails with the
 cause logged; NVDA can then select its next available synthesizer.
 
-## Audio quality
+## Native sample rate and Presence contour
 
-Eloquence produces mono 16-bit PCM at 11,025 Hz. The **Audio quality** synth
-setting offers two output modes:
+The **Sample rate** synth setting independently selects Eloquence's classic
+11.025 kHz engine mode or its native 16 kHz engine mode. Native mode validates
+small bundled patch descriptors against private staged copies of every voice
+file before ECI loads. A missing or incompatible patch aborts initialization;
+the installed voice files are never modified.
 
-- **Standard 11 kHz** passes the engine PCM through unchanged and is the
-  default.
-- **Enhanced 22 kHz** applies an original, stateful 2x interpolation, a subtle
-  vocal-body lift, and gentle high-frequency emphasis in the Rust host before
-  playback.
+The **Presence contour** checkbox is a separate tonal choice. When unchecked,
+native engine PCM passes through bit-for-bit. At the classic rate, checking it
+restores the established tonal contour and 2x reconstruction for 22.05 kHz
+playback. At native 16 kHz, it applies the rate-adjusted tonal contour directly
+without resampling.
 
-Enhanced mode is an optional tonal treatment, not additional source bandwidth.
-Changing the mode safely cancels current speech, resets the audio processor,
-and recreates NVDA's `WavePlayer` with the matching sample rate.
+Existing **Enhanced 22 kHz** selections are migrated automatically, including
+selections stored in individual NVDA configuration profiles: they become
+**Presence contour** enabled at the classic 11.025 kHz rate, preserving the
+user's existing 22.05 kHz processing without silently opting them into native
+16 kHz. Changing rate restarts the private engine while restoring the current
+language, voice variant, prosody, dictionary, and Presence setting.
 
 ## Pronunciation dictionaries
 

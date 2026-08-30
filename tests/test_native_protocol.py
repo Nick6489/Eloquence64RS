@@ -93,6 +93,7 @@ class NativeProtocolTests(unittest.TestCase):
 					"enableAbbreviationDict": True,
 					"enablePhrasePrediction": False,
 					"voiceVariant": 3,
+					"sampleRate": 16000,
 				},
 			}
 		)
@@ -104,15 +105,15 @@ class NativeProtocolTests(unittest.TestCase):
 		self.assertEqual(reader.string(), r"C:\Eloquence\dictionaries\alternative")
 		self.assertEqual(reader.string(), "enu")
 		self.assertEqual(reader.i32(), 65536)
-		self.assertEqual((reader.u8(), reader.u8(), reader.i32()), (1, 0, 3))
+		self.assertEqual((reader.u8(), reader.u8(), reader.i32(), reader.u32()), (1, 0, 3, 16000))
 		reader.finish()
 
-	def test_audio_quality_command_encodes_enhanced_mode(self):
+	def test_presence_contour_command_encodes_enabled_state(self):
 		self.connection.send(
-			{"type": "command", "id": 3, "command": "setAudioQuality", "payload": {"enhanced": True}}
+			{"type": "command", "id": 3, "command": "setPresenceContour", "payload": {"enabled": True}}
 		)
 		kind, request_id, payload = list(self.module.frames(self.writer.getvalue()))[-1]
-		self.assertEqual((kind, request_id), (self.module.SET_AUDIO_QUALITY, 3))
+		self.assertEqual((kind, request_id), (self.module.SET_PRESENCE_CONTOUR, 3))
 		self.assertEqual(payload, b"\x01")
 
 	def test_dictionary_directory_command_encodes_builtin_reload(self):
