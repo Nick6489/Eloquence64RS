@@ -142,6 +142,21 @@ fn process_synthesizes_real_pcm_over_authenticated_stdio() {
             events.push(frame);
         }
     }
+    // Optional diagnostic output for comparing native engine/sample-rate
+    // behavior without routing audio through NVDA or the Windows mixer.
+    if let Some(path) = std::env::var_os("ELOQUENCE_TEST_PCM_PATH") {
+        let mut pcm = Vec::new();
+        for frame in &events {
+            if frame.kind != MessageKind::Audio {
+                continue;
+            }
+            let mut payload = PayloadReader::new(&frame.payload);
+            if payload.get_u64().unwrap() == 9001 {
+                pcm.extend_from_slice(payload.get_bytes().unwrap());
+            }
+        }
+        std::fs::write(path, pcm).unwrap();
+    }
     assert!(events.iter().any(|frame| frame.kind == MessageKind::Audio));
     let index_position = events
         .iter()
