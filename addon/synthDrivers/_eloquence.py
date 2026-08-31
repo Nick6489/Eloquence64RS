@@ -31,8 +31,8 @@ PRESENCE_SAMPLE_RATE = 22050
 _sample_rate = STANDARD_SAMPLE_RATE
 _presence_contour = False
 _current_variant = 0
-# Seconds to let the host exit on its own before we terminate it. A onefile
-# PyInstaller build only removes its _MEI temp directory on a clean exit.
+# Seconds to let the native host finish releasing ECI and exit before forcing
+# it to stop.
 HOST_EXIT_TIMEOUT = 3.0
 
 
@@ -204,7 +204,9 @@ class EloquenceHostClient:
 		authkey = os.urandom(AUTH_KEY_BYTES)
 		cmd = [self._resolve_host_executable(addon_dir)]
 		cmd.extend(["--auth-key", authkey.hex()])
-		LOGGER.info("Launching Eloquence host: %s", cmd)
+		# The key is only an ephemeral handshake nonce for the inherited stdio
+		# channel. Do not expose it in NVDA logs or diagnostic bundles.
+		LOGGER.info("Launching Eloquence host: %s --auth-key <redacted>", cmd[0])
 		proc = subprocess.Popen(
 			cmd,
 			cwd=addon_dir,
@@ -408,16 +410,15 @@ class EloquenceHostClient:
 		if self._player:
 			self._player.close()
 			self._player = None
-		# Send delete command to host (this will cause receiver to get EOFError)
+		# Ask the host worker to release the ECI runtime and exit. The inherited
+		# stdout pipe then closes, which ends the receiver thread with EOFError.
 		try:
 			self.send_command("delete")
 		except Exception:
 			LOGGER.exception("Failed to delete host cleanly")
-		# Let the host exit on its own before touching the socket. Closing the
-		# connection first resets it underneath the host, which turns every
-		# in-flight send into a ConnectionResetError; those escape the host's
-		# serve loop as an unhandled exception and, in a --noconsole build,
-		# surface as an error dialog.
+		# The Delete response is sent before the Rust worker finishes dropping its
+		# runtime. Wait for process exit before closing either inherited pipe so the
+		# host can finish releasing ECI without losing its control channel.
 		exited = False
 		try:
 			self._host.process.wait(timeout=HOST_EXIT_TIMEOUT)
@@ -431,15 +432,14 @@ class EloquenceHostClient:
 		if self._receiver:
 			self._receiver.join(timeout=2)
 			self._receiver = None
-		# Now close connections, and terminate the process only if it is still up.
+		# Now close the inherited pipes, and terminate only if the host is still up.
 		try:
 			self._host.connection.close()
 		except Exception:
 			pass
 		if not exited:
-			# terminate() is TerminateProcess on Windows and cannot be blocked, so
-			# the bootloader never gets to clean up its _MEI directory. Only
-			# reached when the graceful wait above timed out.
+			# This is the last-resort path for a native host wedged in ECI. On Windows,
+			# terminate() calls TerminateProcess and does not run normal cleanup.
 			try:
 				self._host.process.terminate()
 				self._host.process.wait(timeout=2)
