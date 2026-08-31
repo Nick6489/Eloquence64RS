@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from ._eloquence_native import NativeHostConnection
 
+from . import _eloquence_job as _job
+
 import config
 import globalVars
 import nvwave
@@ -177,6 +179,8 @@ class HostProcess:
 class EloquenceHostClient:
 	def __init__(self) -> None:
 		self._host: Optional[HostProcess] = None
+		# One job covers every replacement host and stays open until NVDA exits.
+		self._job: Optional[_job.HostJob] = None
 		self._pending: Dict[int, threading.Event] = {}
 		self._responses: Dict[int, Dict[str, Any]] = {}
 		self._receiver: Optional[threading.Thread] = None
@@ -215,6 +219,7 @@ class EloquenceHostClient:
 			stderr=subprocess.DEVNULL,
 			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
 		)
+		self._adopt_into_job(proc)
 		if proc.stdin is None or proc.stdout is None:
 			self._terminate_process(proc)
 			raise RuntimeError("native Eloquence host pipes were not created")
@@ -237,6 +242,22 @@ class EloquenceHostClient:
 			self._terminate_process(proc)
 			raise RuntimeError(f"native Eloquence host handshake failed: {connection}") from connection
 		return HostProcess(process=proc, connection=connection)
+
+	def _adopt_into_job(self, process: subprocess.Popen) -> None:
+		"""Cover a new native host with the kill-on-NVDA-exit backstop."""
+		if self._job is None:
+			self._job = _job.HostJob.create()
+		if self._job is None:
+			return
+		try:
+			handle = int(process._handle)
+		except Exception:
+			LOGGER.warning(
+				"Eloquence host exposes no process handle; skipping Job Object assignment",
+				exc_info=True,
+			)
+			return
+		self._job.assign(handle)
 
 	@staticmethod
 	def _terminate_process(process: subprocess.Popen) -> None:
