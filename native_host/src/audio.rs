@@ -18,16 +18,6 @@ struct Coefficients {
     a2: f32,
 }
 
-impl Coefficients {
-    const IDENTITY: Self = Self {
-        b0: 1.0,
-        b1: 0.0,
-        b2: 0.0,
-        a1: 0.0,
-        a2: 0.0,
-    };
-}
-
 #[derive(Debug)]
 struct Biquad {
     coefficients: Coefficients,
@@ -88,7 +78,7 @@ impl Default for AudioProcessor {
 
 impl AudioProcessor {
     const HISTORY_LENGTH: usize = 16;
-    const OUTPUT_GAIN: f32 = 0.80;
+    const CLASSIC_OUTPUT_GAIN: f32 = 0.80;
     const HALF_SAMPLE_PHASE: [f32; Self::HISTORY_LENGTH] = [
         0.0,
         0.002_116_937_3,
@@ -141,15 +131,18 @@ impl AudioProcessor {
             )
         } else {
             (
-                Coefficients::IDENTITY,
-                Coefficients::IDENTITY,
-                // Match the preferred Pythonic reconstruction's broad tonal
-                // envelope without copying its aliasing or steep bandwidth
-                // collapse. The target rises smoothly to about +10 dB through
-                // 4--6 kHz, then the peak naturally returns to unity at the
-                // genuine 8 kHz Nyquist edge instead of sustaining a lispy
-                // high-shelf boost.
-                peaking_eq(sample_rate as f32, 4_800.0, 0.65, 10.0),
+                // ReaEQ applied the requested 7.5656 kHz band after the raw
+                // 16 kHz PCM had been resampled to 44.1 kHz. A conventional
+                // peaking biquad running at 16 kHz must return to unity at its
+                // 8 kHz Nyquist edge and therefore cannot reproduce that
+                // auditioned curve. This shelf and the adjusted peak below
+                // are a rate-translated approximation (maximum error below
+                // 0.24 dB from 6--8 kHz) which retains the intended edge cut.
+                high_shelf(sample_rate as f32, 7_615.6, -3.8366),
+                // The lower band is sufficiently far from Nyquist to use the
+                // supplied ReaEQ parameters directly.
+                peaking_eq_bandwidth(sample_rate as f32, 1_219.5, 0.14, -7.3),
+                peaking_eq_bandwidth(sample_rate as f32, 7_529.17, 0.100_21, -7.0959),
             )
         };
         Self {
@@ -186,7 +179,10 @@ impl AudioProcessor {
             let present = self.shelf.process(f32::from(sample));
             let shaped = self.body.process(present);
             if !resample {
-                output.push(Self::finish(self.rate_compensation.process(shaped)));
+                // The native profile was designed in ReaEQ from raw 16 kHz
+                // output with no master gain. All filters are cuts, so no
+                // additional clipping headroom is necessary.
+                output.push(Self::finish(self.rate_compensation.process(shaped), 1.0));
                 continue;
             }
             self.history.copy_within(..Self::HISTORY_LENGTH - 1, 1);
@@ -198,23 +194,37 @@ impl AudioProcessor {
                 .map(|(sample, coefficient)| sample * coefficient)
                 .sum::<f32>();
             let original = self.history[Self::ORIGINAL_PHASE_INDEX] * Self::ORIGINAL_PHASE_GAIN;
-            output.push(Self::finish(self.rate_compensation.process(interpolated)));
-            output.push(Self::finish(self.rate_compensation.process(original)));
+            output.push(Self::finish(
+                self.rate_compensation.process(interpolated),
+                Self::CLASSIC_OUTPUT_GAIN,
+            ));
+            output.push(Self::finish(
+                self.rate_compensation.process(original),
+                Self::CLASSIC_OUTPUT_GAIN,
+            ));
         }
         output
     }
 
-    fn finish(sample: f32) -> i16 {
-        (sample * Self::OUTPUT_GAIN)
+    fn finish(sample: f32, output_gain: f32) -> i16 {
+        (sample * output_gain)
             .round()
             .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
     }
 }
 
-fn peaking_eq(sample_rate: f32, frequency: f32, q: f32, gain_db: f32) -> Coefficients {
+/// RBJ peaking EQ whose bandwidth is measured in octaves at the half-gain
+/// points. The `omega / sin(omega)` term compensates for bilinear-transform
+/// frequency warping, which is especially significant near Nyquist.
+fn peaking_eq_bandwidth(
+    sample_rate: f32,
+    frequency: f32,
+    bandwidth_octaves: f32,
+    gain_db: f32,
+) -> Coefficients {
     let a = 10.0_f32.powf(gain_db / 40.0);
     let omega = 2.0 * PI * frequency / sample_rate;
-    let alpha = omega.sin() / (2.0 * q);
+    let alpha = omega.sin() * (2.0_f32.ln() / 2.0 * bandwidth_octaves * omega / omega.sin()).sinh();
     normalize(
         1.0 + alpha * a,
         -2.0 * omega.cos(),
@@ -298,14 +308,28 @@ mod tests {
     }
 
     #[test]
-    fn native_contour_matches_the_pythonic_articulation_target() {
-        let low = processed_rms(16_000, 250.0);
-        let articulation = processed_rms(16_000, 4_800.0);
-        let lift = 20.0 * (articulation / low).log10();
-        assert!(
-            (9.8..10.2).contains(&lift),
-            "16 kHz articulation lift was {lift:.2} dB"
-        );
+    fn native_contour_matches_the_rate_translated_reaeq_curve() {
+        let processor = AudioProcessor::new(16_000);
+        let reference_lower = peaking_eq_bandwidth(44_100.0, 1_219.5, 0.14, -7.3);
+        let reference_upper = peaking_eq_bandwidth(44_100.0, 7_565.6, 0.14, -8.2);
+        for frequency in [
+            500.0, 1_000.0, 1_219.5, 1_500.0, 4_000.0, 6_000.0, 7_000.0, 7_207.3, 7_565.6, 7_800.0,
+            7_932.9, 7_990.0,
+        ] {
+            let actual = coefficient_gain_db(&processor.shelf.coefficients, frequency, 16_000.0)
+                + coefficient_gain_db(&processor.body.coefficients, frequency, 16_000.0)
+                + coefficient_gain_db(
+                    &processor.rate_compensation.coefficients,
+                    frequency,
+                    16_000.0,
+                );
+            let expected = coefficient_gain_db(&reference_lower, frequency, 44_100.0)
+                + coefficient_gain_db(&reference_upper, frequency, 44_100.0);
+            assert!(
+                (actual - expected).abs() < 0.24,
+                "16 kHz contour was {actual:.2} dB at {frequency:.1} Hz; expected {expected:.2} dB"
+            );
+        }
     }
 
     #[test]
@@ -320,14 +344,15 @@ mod tests {
     }
 
     #[test]
-    fn native_compensation_is_broad_and_rate_specific() {
-        let low = compensation_gain_db(16_000, 500.0);
-        let centre = compensation_gain_db(16_000, 4_800.0);
-        assert!(low.abs() < 0.25, "native low band changed by {low:.2} dB");
-        assert!(
-            (9.8..10.2).contains(&centre),
-            "native clarity correction was {centre:.2} dB"
-        );
+    fn native_reaeq_bandwidth_is_measured_in_octaves() {
+        let processor = AudioProcessor::new(16_000);
+        for frequency in [1_219.5 * 2.0_f32.powf(-0.07), 1_219.5 * 2.0_f32.powf(0.07)] {
+            let actual = coefficient_gain_db(&processor.body.coefficients, frequency, 16_000.0);
+            assert!(
+                (actual - (-7.3 / 2.0)).abs() < 0.02,
+                "lower band was {actual:.2} dB at {frequency:.1} Hz"
+            );
+        }
     }
 
     #[test]
@@ -376,6 +401,22 @@ mod tests {
             / (output.len() - 256) as f32)
             .sqrt();
         20.0 * (output_rms / input_rms).log10()
+    }
+
+    fn coefficient_gain_db(coefficients: &Coefficients, frequency: f32, sample_rate: f32) -> f32 {
+        let omega = TAU * frequency / sample_rate;
+        let z1_real = omega.cos();
+        let z1_imaginary = -omega.sin();
+        let z2_real = (2.0 * omega).cos();
+        let z2_imaginary = -(2.0 * omega).sin();
+        let numerator_real =
+            coefficients.b0 + coefficients.b1 * z1_real + coefficients.b2 * z2_real;
+        let numerator_imaginary = coefficients.b1 * z1_imaginary + coefficients.b2 * z2_imaginary;
+        let denominator_real = 1.0 + coefficients.a1 * z1_real + coefficients.a2 * z2_real;
+        let denominator_imaginary = coefficients.a1 * z1_imaginary + coefficients.a2 * z2_imaginary;
+        20.0 * (numerator_real.hypot(numerator_imaginary)
+            / denominator_real.hypot(denominator_imaginary))
+        .log10()
     }
 
     fn rms(samples: &[i16]) -> f32 {

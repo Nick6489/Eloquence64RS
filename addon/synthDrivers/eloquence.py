@@ -1026,7 +1026,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		# Translators: A synth setting available in speech settings dialog
 		DriverSetting("pauseMode", _("Shorten &pauses"), defaultVal="0"),
 		# Translators: Selects Eloquence's native synthesis sample rate.
-		DriverSetting("sampleRate", _("Sample &rate"), defaultVal="11025"),
+		DriverSetting("sampleRate", _("Sample rate (&Q)"), defaultVal="11025"),
 		# Translators: A checkbox that applies Eloquence64RS's optional tonal contour.
 		BooleanDriverSetting("presenceContour", _("Presence &contour"), False),
 	)

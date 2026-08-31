@@ -241,7 +241,10 @@ def _install_nvda_stubs():
 	driver_handler = types.ModuleType("driverHandler")
 	driver_handler.NumericDriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(id=setting_id)
 	driver_handler.BooleanDriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(id=setting_id)
-	driver_handler.DriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(id=setting_id)
+	driver_handler.DriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(
+		id=setting_id,
+		displayName=args[0] if args else None,
+	)
 	sys.modules["driverHandler"] = driver_handler
 
 	synth_driver_handler = types.ModuleType("synthDriverHandler")
@@ -434,6 +437,14 @@ class LanguageScopeTests(unittest.TestCase):
 
 		self.assertEqual(driver._get_sampleRate(), "16000")
 		self.assertEqual(eloquence_stub.sample_rate_calls, [16000])
+
+	def test_sample_rate_uses_alt_q_mnemonic(self):
+		module, _eloquence_stub, _preprocess_calls = _load_driver()
+
+		sample_rate = next(
+			setting for setting in module.SynthDriver.supportedSettings if setting.id == "sampleRate"
+		)
+		self.assertEqual(sample_rate.displayName, "Sample rate (&Q)")
 
 	def test_sample_rate_exposes_the_property_name_nvda_requests(self):
 		module, _eloquence_stub, _preprocess_calls = _load_driver()
