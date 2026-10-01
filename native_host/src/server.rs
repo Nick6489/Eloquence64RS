@@ -163,10 +163,10 @@ impl Runtime {
                 Ok(self.state_payload())
             }
             ClientCommand::SetPresenceContour(enabled) => {
-                let contour = if enabled {
-                    PresenceContour::Enabled
-                } else {
-                    PresenceContour::Disabled
+                let contour = match enabled {
+                    1 => PresenceContour::Enabled,
+                    2 => PresenceContour::Presence,
+                    _ => PresenceContour::Disabled,
                 };
                 self.engine.set_presence_contour(contour);
                 Ok(Vec::new())

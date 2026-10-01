@@ -1,478 +1,111 @@
-//! Rate-aware Presence processing for Eloquence PCM.
-
-use std::f32::consts::PI;
+//! Sound contours, retaining the original Beta 2 and Beta 4 DSP verbatim.
+// These modules are historical implementations. Keep their arithmetic and
+// state handling intact: the wrapper selects them rather than recreating EQ.
+#[path = "audio_beta2.rs"]
+mod beta2;
+#[path = "audio_beta4.rs"]
+mod beta4;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PresenceContour {
     #[default]
     Disabled,
+    // Wire value 1 retains the former checkbox's native contour selection.
     Enabled,
+    Presence,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Coefficients {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-}
-
-impl Coefficients {
-    const IDENTITY: Self = Self {
-        b0: 1.0,
-        b1: 0.0,
-        b2: 0.0,
-        a1: 0.0,
-        a2: 0.0,
-    };
-}
-
-#[derive(Debug)]
-struct Biquad {
-    coefficients: Coefficients,
-    x1: f32,
-    x2: f32,
-    y1: f32,
-    y2: f32,
-}
-
-impl Biquad {
-    fn new(coefficients: Coefficients) -> Self {
-        Self {
-            coefficients,
-            x1: 0.0,
-            x2: 0.0,
-            y1: 0.0,
-            y2: 0.0,
-        }
-    }
-
-    fn process(&mut self, sample: f32) -> f32 {
-        let c = self.coefficients;
-        let output =
-            c.b0 * sample + c.b1 * self.x1 + c.b2 * self.x2 - c.a1 * self.y1 - c.a2 * self.y2;
-        self.x2 = self.x1;
-        self.x1 = sample;
-        self.y2 = self.y1;
-        self.y1 = output;
-        output
-    }
-
-    fn reset(&mut self) {
-        self.x1 = 0.0;
-        self.x2 = 0.0;
-        self.y1 = 0.0;
-        self.y2 = 0.0;
-    }
-}
-
-/// Applies the same acoustic contour at either native engine sample rate.
-/// Classic 11.025 kHz Presence retains the established 2x reconstruction;
-/// native 16 kHz Presence shapes the genuine engine output without resampling.
 #[derive(Debug)]
 pub struct AudioProcessor {
     contour: PresenceContour,
-    shelf: Biquad,
-    body: Biquad,
-    rate_compensation: Biquad,
-    air_shelf: Biquad,
     sample_rate: u32,
-    history: [f32; Self::HISTORY_LENGTH],
+    presence: beta2::AudioProcessor,
+    smooth: beta4::AudioProcessor,
 }
-
 impl Default for AudioProcessor {
     fn default() -> Self {
         Self::new(11_025)
     }
 }
-
 impl AudioProcessor {
-    const HISTORY_LENGTH: usize = 16;
-    const CLASSIC_OUTPUT_GAIN: f32 = 0.80;
-    const HALF_SAMPLE_PHASE: [f32; Self::HISTORY_LENGTH] = [
-        0.0,
-        0.002_116_937_3,
-        -0.009_574_75,
-        0.024_439_279,
-        -0.050_227_597,
-        0.095_495_91,
-        -0.191_948_6,
-        0.629_683_4,
-        0.629_683_4,
-        -0.191_948_6,
-        0.095_495_91,
-        -0.050_227_597,
-        0.024_439_279,
-        -0.009_574_75,
-        0.002_116_937_3,
-        0.0,
-    ];
-    const ORIGINAL_PHASE_INDEX: usize = 7;
-    const ORIGINAL_PHASE_GAIN: f32 = 1.000_030_9;
-
-    // Preserve the established 11.025 kHz contour coefficients literally.
-    // Runtime generation is used only for native 16 kHz, where the same
-    // acoustic frequencies need different digital coefficients.
-    const CLASSIC_SHELF: Coefficients = Coefficients {
-        b0: 1.366_705_5,
-        b1: -0.460_215_84,
-        b2: 0.261_982_5,
-        a1: -0.003_102_395,
-        a2: 0.171_574_58,
-    };
-    const CLASSIC_BODY: Coefficients = Coefficients {
-        b0: 1.014_337_4,
-        b1: -0.971_640_8,
-        b2: 0.377_226_1,
-        a1: -0.971_640_8,
-        a2: 0.391_563_48,
-    };
-
     pub fn new(sample_rate: u32) -> Self {
-        let (shelf, body, rate_compensation, air_shelf) = if sample_rate == 11_025 {
-            (
-                Self::CLASSIC_SHELF,
-                Self::CLASSIC_BODY,
-                // Apply the end-to-end capture correction after 2x
-                // interpolation, at the actual 22.05 kHz output rate. The
-                // first +3.4 dB audition overshot the intended broad-band
-                // response by about 1 dB, so retain only a gentle lift.
-                high_shelf(22_050.0, 6_300.0, 1.0, 1.0),
-                Coefficients::IDENTITY,
-            )
-        } else {
-            (
-                // ReaEQ applied the requested 7.5656 kHz band after the raw
-                // 16 kHz PCM had been resampled to 48 kHz. A conventional
-                // peaking biquad running at 16 kHz must return to unity at its
-                // 8 kHz Nyquist edge and therefore cannot reproduce that
-                // auditioned curve. This shelf and the adjusted peak below
-                // are a close rate-translated approximation which retains
-                // the intended edge cut.
-                high_shelf(sample_rate as f32, 7_615.6, -3.8366, 1.0),
-                // The lower band is sufficiently far from Nyquist to use the
-                // supplied ReaEQ parameters directly.
-                peaking_eq_bandwidth(sample_rate as f32, 1_219.5, 0.14, -7.3),
-                peaking_eq_bandwidth(sample_rate as f32, 7_529.17, 0.100_21, -7.0959),
-                // Gianluca's third ReaEQ passage is a +5 dB High Shelf at
-                // 6,666.1 Hz with 0.80-octave bandwidth, applied at 48 kHz.
-                // This fitted 16 kHz shelf follows that measured transition
-                // to within 0.20 dB through the available 3--8 kHz band.
-                high_shelf(sample_rate as f32, 6_122.86, 3.5822, 0.6797),
-            )
-        };
         Self {
             contour: PresenceContour::Disabled,
-            shelf: Biquad::new(shelf),
-            body: Biquad::new(body),
-            rate_compensation: Biquad::new(rate_compensation),
-            air_shelf: Biquad::new(air_shelf),
             sample_rate,
-            history: [0.0; Self::HISTORY_LENGTH],
+            presence: beta2::AudioProcessor::new(sample_rate),
+            smooth: beta4::AudioProcessor::new(sample_rate),
         }
     }
-
     pub fn set_contour(&mut self, contour: PresenceContour) {
         if self.contour != contour {
             self.contour = contour;
+            self.presence.set_contour(beta2::PresenceContour::Enabled);
+            self.smooth.set_contour(beta4::PresenceContour::Enabled);
             self.reset();
         }
     }
-
     pub fn reset(&mut self) {
-        self.shelf.reset();
-        self.body.reset();
-        self.rate_compensation.reset();
-        self.air_shelf.reset();
-        self.history.fill(0.0);
+        self.presence.reset();
+        self.smooth.reset();
     }
-
     pub fn process(&mut self, input: &[i16]) -> Vec<i16> {
-        if self.contour == PresenceContour::Disabled {
-            return input.to_vec();
+        match self.contour {
+            PresenceContour::Disabled => input.to_vec(),
+            PresenceContour::Presence => self.presence.process(input),
+            PresenceContour::Enabled if self.sample_rate == 11_025 => self.presence.process(input),
+            PresenceContour::Enabled => self.smooth.process(input),
         }
-        let resample = self.sample_rate == 11_025;
-        let mut output = Vec::with_capacity(input.len() * if resample { 2 } else { 1 });
-        for &sample in input {
-            let present = self.shelf.process(f32::from(sample));
-            let shaped = self.body.process(present);
-            if !resample {
-                // The native profile was designed in ReaEQ from raw 16 kHz
-                // output with no master gain. Preserve that unity master gain;
-                // `finish` saturates any rare full-scale overflow.
-                let upper_shaped = self.rate_compensation.process(shaped);
-                output.push(Self::finish(self.air_shelf.process(upper_shaped), 1.0));
-                continue;
-            }
-            self.history.copy_within(..Self::HISTORY_LENGTH - 1, 1);
-            self.history[0] = shaped;
-            let interpolated = self
-                .history
-                .iter()
-                .zip(Self::HALF_SAMPLE_PHASE)
-                .map(|(sample, coefficient)| sample * coefficient)
-                .sum::<f32>();
-            let original = self.history[Self::ORIGINAL_PHASE_INDEX] * Self::ORIGINAL_PHASE_GAIN;
-            output.push(Self::finish(
-                self.rate_compensation.process(interpolated),
-                Self::CLASSIC_OUTPUT_GAIN,
-            ));
-            output.push(Self::finish(
-                self.rate_compensation.process(original),
-                Self::CLASSIC_OUTPUT_GAIN,
-            ));
-        }
-        output
-    }
-
-    fn finish(sample: f32, output_gain: f32) -> i16 {
-        (sample * output_gain)
-            .round()
-            .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
-    }
-}
-
-/// RBJ peaking EQ whose bandwidth is measured in octaves at the half-gain
-/// points. The `omega / sin(omega)` term compensates for bilinear-transform
-/// frequency warping, which is especially significant near Nyquist.
-fn peaking_eq_bandwidth(
-    sample_rate: f32,
-    frequency: f32,
-    bandwidth_octaves: f32,
-    gain_db: f32,
-) -> Coefficients {
-    let a = 10.0_f32.powf(gain_db / 40.0);
-    let omega = 2.0 * PI * frequency / sample_rate;
-    let alpha = omega.sin() * (2.0_f32.ln() / 2.0 * bandwidth_octaves * omega / omega.sin()).sinh();
-    normalize(
-        1.0 + alpha * a,
-        -2.0 * omega.cos(),
-        1.0 - alpha * a,
-        1.0 + alpha / a,
-        -2.0 * omega.cos(),
-        1.0 - alpha / a,
-    )
-}
-
-fn high_shelf(sample_rate: f32, frequency: f32, gain_db: f32, slope: f32) -> Coefficients {
-    let a = 10.0_f32.powf(gain_db / 40.0);
-    let omega = 2.0 * PI * frequency / sample_rate;
-    let cosine = omega.cos();
-    let alpha = omega.sin() / 2.0 * ((a + 1.0 / a) * (1.0 / slope - 1.0) + 2.0).sqrt();
-    let root = 2.0 * a.sqrt() * alpha;
-    normalize(
-        a * ((a + 1.0) + (a - 1.0) * cosine + root),
-        -2.0 * a * ((a - 1.0) + (a + 1.0) * cosine),
-        a * ((a + 1.0) + (a - 1.0) * cosine - root),
-        (a + 1.0) - (a - 1.0) * cosine + root,
-        2.0 * ((a - 1.0) - (a + 1.0) * cosine),
-        (a + 1.0) - (a - 1.0) * cosine - root,
-    )
-}
-
-fn normalize(b0: f32, b1: f32, b2: f32, a0: f32, a1: f32, a2: f32) -> Coefficients {
-    Coefficients {
-        b0: b0 / a0,
-        b1: b1 / a0,
-        b2: b2 / a0,
-        a1: a1 / a0,
-        a2: a2 / a0,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f32::consts::TAU;
-
     #[test]
-    fn disabled_contour_preserves_pcm_exactly_at_both_rates() {
-        let input = [i16::MIN, -1, 0, 1, i16::MAX];
+    fn selected_contours_match_original_betas_sample_for_sample() {
+        let input: Vec<i16> = (0..8192)
+            .map(|i| ((i * 7919 % 65536) - 32768) as i16)
+            .collect();
         for rate in [11_025, 16_000] {
-            assert_eq!(AudioProcessor::new(rate).process(&input), input);
+            for contour in [PresenceContour::Presence, PresenceContour::Enabled] {
+                let mut current = AudioProcessor::new(rate);
+                current.set_contour(contour);
+                let mut original2 = beta2::AudioProcessor::new(rate);
+                original2.set_contour(beta2::PresenceContour::Enabled);
+                let mut original4 = beta4::AudioProcessor::new(rate);
+                original4.set_contour(beta4::PresenceContour::Enabled);
+                for chunk in input.chunks(137) {
+                    let expected = if contour == PresenceContour::Presence || rate == 11_025 {
+                        original2.process(chunk)
+                    } else {
+                        original4.process(chunk)
+                    };
+                    assert_eq!(current.process(chunk), expected);
+                }
+                current.reset();
+                original2.reset();
+                original4.reset();
+                let expected = if contour == PresenceContour::Presence || rate == 11_025 {
+                    original2.process(&input)
+                } else {
+                    original4.process(&input)
+                };
+                assert_eq!(current.process(&input), expected);
+            }
         }
     }
-
     #[test]
-    fn enabled_contour_resamples_only_classic_mode() {
-        let mut classic = AudioProcessor::new(11_025);
-        classic.set_contour(PresenceContour::Enabled);
-        assert_eq!(classic.process(&[1000, 2000, 3000]).len(), 6);
-        let mut native = AudioProcessor::new(16_000);
-        native.set_contour(PresenceContour::Enabled);
-        assert_eq!(native.process(&[1000, 2000, 3000]).len(), 3);
-    }
-
-    #[test]
-    fn contour_is_invariant_across_callback_chunks() {
-        let input = [1000, -2000, 4000, -8000, 16_000, 500, -250, 125];
+    fn raw_is_exact_and_switching_contours_resets_history() {
         for rate in [11_025, 16_000] {
-            let mut contiguous = AudioProcessor::new(rate);
-            contiguous.set_contour(PresenceContour::Enabled);
-            let expected = contiguous.process(&input);
-            let mut chunked = AudioProcessor::new(rate);
-            chunked.set_contour(PresenceContour::Enabled);
-            let mut actual = chunked.process(&input[..3]);
-            actual.extend(chunked.process(&input[3..]));
-            assert_eq!(actual, expected);
+            let input = [i16::MIN, -1, 0, 1, i16::MAX];
+            let mut processor = AudioProcessor::new(rate);
+            assert_eq!(processor.process(&input), input);
+            processor.set_contour(PresenceContour::Presence);
+            processor.process(&input);
+            processor.set_contour(PresenceContour::Enabled);
+            let mut fresh = AudioProcessor::new(rate);
+            fresh.set_contour(PresenceContour::Enabled);
+            assert_eq!(processor.process(&input), fresh.process(&input));
         }
-    }
-
-    #[test]
-    fn classic_contour_retains_the_established_presence_shape() {
-        let low = processed_rms(11_025, 250.0);
-        let presence = processed_rms(11_025, 4_000.0);
-        let lift = 20.0 * (presence / low).log10();
-        assert!((3.5..6.5).contains(&lift), "11 kHz lift was {lift:.2} dB");
-    }
-
-    #[test]
-    fn native_contour_matches_the_rate_translated_reaeq_curve() {
-        let processor = AudioProcessor::new(16_000);
-        let reference_lower = peaking_eq_bandwidth(48_000.0, 1_219.5, 0.14, -7.3);
-        let reference_upper = peaking_eq_bandwidth(48_000.0, 7_565.6, 0.14, -8.2);
-        // The confirmed 0.80-octave ReaEQ shelf measured as this equivalent
-        // RBJ transition in the supplied 48 kHz render.
-        let reference_air = high_shelf(48_000.0, 6_666.1, 5.0, 1.325);
-        for frequency in [
-            500.0, 1_000.0, 1_219.5, 1_500.0, 4_000.0, 6_000.0, 7_000.0, 7_207.3, 7_565.6, 7_800.0,
-            7_932.9, 7_990.0,
-        ] {
-            let actual = coefficient_gain_db(&processor.shelf.coefficients, frequency, 16_000.0)
-                + coefficient_gain_db(&processor.body.coefficients, frequency, 16_000.0)
-                + coefficient_gain_db(
-                    &processor.rate_compensation.coefficients,
-                    frequency,
-                    16_000.0,
-                )
-                + coefficient_gain_db(&processor.air_shelf.coefficients, frequency, 16_000.0);
-            let expected = coefficient_gain_db(&reference_lower, frequency, 48_000.0)
-                + coefficient_gain_db(&reference_upper, frequency, 48_000.0)
-                + coefficient_gain_db(&reference_air, frequency, 48_000.0);
-            assert!(
-                (actual - expected).abs() < 0.45,
-                "16 kHz contour was {actual:.2} dB at {frequency:.1} Hz; expected {expected:.2} dB"
-            );
-        }
-    }
-
-    #[test]
-    fn classic_output_compensation_targets_only_the_upper_transition_band() {
-        let low = compensation_gain_db(11_025, 1_000.0);
-        let upper = compensation_gain_db(11_025, 8_000.0);
-        assert!(low.abs() < 0.25, "classic low band changed by {low:.2} dB");
-        assert!(
-            (0.7..1.1).contains(&upper),
-            "classic upper correction was {upper:.2} dB"
-        );
-    }
-
-    #[test]
-    fn native_reaeq_bandwidth_is_measured_in_octaves() {
-        let processor = AudioProcessor::new(16_000);
-        for frequency in [1_219.5 * 2.0_f32.powf(-0.07), 1_219.5 * 2.0_f32.powf(0.07)] {
-            let actual = coefficient_gain_db(&processor.body.coefficients, frequency, 16_000.0);
-            assert!(
-                (actual - (-7.3 / 2.0)).abs() < 0.02,
-                "lower band was {actual:.2} dB at {frequency:.1} Hz"
-            );
-        }
-    }
-
-    #[test]
-    fn classic_interpolator_rejects_the_mirrored_image_band() {
-        let frequency = 4_000.0;
-        let input = make_tone(11_025, frequency, 4096);
-        let mut processor = AudioProcessor::new(11_025);
-        processor.set_contour(PresenceContour::Enabled);
-        let output = processor.process(&input);
-        let settled = &output[128..];
-        let wanted = tone_amplitude(settled, frequency, 22_050.0);
-        let image = tone_amplitude(settled, 11_025.0 - frequency, 22_050.0);
-        let rejection_db = 20.0 * (image / wanted).log10();
-        assert!(
-            rejection_db < -35.0,
-            "image rejection was {rejection_db:.2} dB"
-        );
-    }
-
-    fn processed_rms(rate: u32, frequency: f32) -> f32 {
-        let input = make_tone(rate, frequency, 8192);
-        let mut processor = AudioProcessor::new(rate);
-        processor.set_contour(PresenceContour::Enabled);
-        let output = processor.process(&input);
-        (output[256..]
-            .iter()
-            .map(|&sample| f32::from(sample).powi(2))
-            .sum::<f32>()
-            / (output.len() - 256) as f32)
-            .sqrt()
-    }
-
-    fn compensation_gain_db(rate: u32, frequency: f32) -> f32 {
-        let filter_rate = if rate == 11_025 { 22_050 } else { rate };
-        let input = make_tone(filter_rate, frequency, 8192);
-        let input_rms = rms(&input[256..]);
-        let mut processor = AudioProcessor::new(rate);
-        let output = input
-            .into_iter()
-            .map(|sample| processor.rate_compensation.process(f32::from(sample)))
-            .collect::<Vec<_>>();
-        let output_rms = (output[256..]
-            .iter()
-            .map(|sample| sample.powi(2))
-            .sum::<f32>()
-            / (output.len() - 256) as f32)
-            .sqrt();
-        20.0 * (output_rms / input_rms).log10()
-    }
-
-    fn coefficient_gain_db(coefficients: &Coefficients, frequency: f32, sample_rate: f32) -> f32 {
-        let omega = TAU * frequency / sample_rate;
-        let z1_real = omega.cos();
-        let z1_imaginary = -omega.sin();
-        let z2_real = (2.0 * omega).cos();
-        let z2_imaginary = -(2.0 * omega).sin();
-        let numerator_real =
-            coefficients.b0 + coefficients.b1 * z1_real + coefficients.b2 * z2_real;
-        let numerator_imaginary = coefficients.b1 * z1_imaginary + coefficients.b2 * z2_imaginary;
-        let denominator_real = 1.0 + coefficients.a1 * z1_real + coefficients.a2 * z2_real;
-        let denominator_imaginary = coefficients.a1 * z1_imaginary + coefficients.a2 * z2_imaginary;
-        20.0 * (numerator_real.hypot(numerator_imaginary)
-            / denominator_real.hypot(denominator_imaginary))
-        .log10()
-    }
-
-    fn rms(samples: &[i16]) -> f32 {
-        (samples
-            .iter()
-            .map(|&sample| f32::from(sample).powi(2))
-            .sum::<f32>()
-            / samples.len() as f32)
-            .sqrt()
-    }
-
-    fn make_tone(rate: u32, frequency: f32, length: usize) -> Vec<i16> {
-        (0..length)
-            .map(|index| {
-                (8000.0 * (TAU * frequency * index as f32 / rate as f32).sin()).round() as i16
-            })
-            .collect()
-    }
-
-    fn tone_amplitude(samples: &[i16], frequency: f32, sample_rate: f32) -> f32 {
-        let (real, imaginary) =
-            samples
-                .iter()
-                .enumerate()
-                .fold((0.0, 0.0), |(real, imaginary), (index, &sample)| {
-                    let phase = TAU * frequency * index as f32 / sample_rate;
-                    (
-                        real + f32::from(sample) * phase.cos(),
-                        imaginary - f32::from(sample) * phase.sin(),
-                    )
-                });
-        real.hypot(imaginary) * 2.0 / samples.len() as f32
     }
 }

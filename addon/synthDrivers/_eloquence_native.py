@@ -225,7 +225,7 @@ class NativeHostConnection:
 		if command == "copyVoice":
 			return COPY_VOICE, struct.pack("<i", int(payload["variant"]))
 		if command == "setPresenceContour":
-			return SET_PRESENCE_CONTOUR, struct.pack("<B", bool(payload["enabled"]))
+			return SET_PRESENCE_CONTOUR, struct.pack("<B", int(payload["enabled"]))
 		if command == "setDictionaryDirectory":
 			return SET_DICTIONARY_DIRECTORY, b"".join(
 				(

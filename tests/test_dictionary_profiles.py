@@ -62,7 +62,10 @@ class DictionaryProfileTests(unittest.TestCase):
 				data_directory,
 				dictionaries.ALTERNATIVE_PROFILE,
 			)
-			self.assertEqual(result, {"files": 2, "entries": 2})
+			self.assertEqual(
+				result,
+				{"files": 2, "entries": 2, "added": 2, "changed": 0, "removed": 0},
+			)
 			with open(os.path.join(profile_directory, "enumain.dic"), "rb") as dictionary:
 				self.assertEqual(dictionary.read(), b"root\tpreferred\n")
 
@@ -74,11 +77,69 @@ class DictionaryProfileTests(unittest.TestCase):
 				"_download",
 				side_effect=lambda _url, destination: shutil.copy2(archive, destination),
 			):
-				dictionaries.update_profile(data_directory, dictionaries.ALTERNATIVE_PROFILE)
+				result = dictionaries.update_profile(data_directory, dictionaries.ALTERNATIVE_PROFILE)
 
+			self.assertEqual(
+				result,
+				{"files": 1, "entries": 1, "added": 1, "changed": 0, "removed": 2},
+			)
 			self.assertEqual(dictionaries.dictionary_files(profile_directory), ["enumain.dic"])
 			with open(os.path.join(profile_directory, "enumain.dic"), "rb") as dictionary:
 				self.assertEqual(dictionary.read(), b"replacement\tentry\n")
+
+	def test_provider_update_compares_changed_and_unchanged_entries(self):
+		with tempfile.TemporaryDirectory() as data_directory, tempfile.TemporaryDirectory() as source:
+			profile_directory = dictionaries.profile_directory(
+				data_directory,
+				dictionaries.ALTERNATIVE_PROFILE,
+			)
+			os.makedirs(profile_directory)
+			with open(os.path.join(profile_directory, "enuroot.dic"), "wb") as dictionary:
+				dictionary.write(b"same\tpronunciation\nchanged\told\nremoved\told\n")
+
+			archive = os.path.join(source, "snapshot.zip")
+			with zipfile.ZipFile(archive, "w") as package:
+				package.writestr(
+					"repository-master/enuroot.dic",
+					b"same\tpronunciation\nchanged\tnew\nadded\tnew\n",
+				)
+			with mock.patch.object(
+				dictionaries,
+				"_download",
+				side_effect=lambda _url, destination: shutil.copy2(archive, destination),
+			):
+				result = dictionaries.update_profile(data_directory, dictionaries.ALTERNATIVE_PROFILE)
+
+			self.assertEqual(
+				result,
+				{"files": 1, "entries": 3, "added": 1, "changed": 1, "removed": 1},
+			)
+
+	def test_provider_update_reports_identical_snapshot(self):
+		with tempfile.TemporaryDirectory() as data_directory, tempfile.TemporaryDirectory() as source:
+			profile_directory = dictionaries.profile_directory(
+				data_directory,
+				dictionaries.ALTERNATIVE_PROFILE,
+			)
+			os.makedirs(profile_directory)
+			contents = b"same\tpronunciation\n"
+			with open(os.path.join(profile_directory, "enuroot.dic"), "wb") as dictionary:
+				dictionary.write(contents)
+
+			archive = os.path.join(source, "snapshot.zip")
+			with zipfile.ZipFile(archive, "w") as package:
+				package.writestr("repository-master/enuroot.dic", contents)
+			with mock.patch.object(
+				dictionaries,
+				"_download",
+				side_effect=lambda _url, destination: shutil.copy2(archive, destination),
+			):
+				result = dictionaries.update_profile(data_directory, dictionaries.ALTERNATIVE_PROFILE)
+
+			self.assertEqual(
+				result,
+				{"files": 1, "entries": 1, "added": 0, "changed": 0, "removed": 0},
+			)
 
 	def test_invalid_download_keeps_previous_snapshot(self):
 		with tempfile.TemporaryDirectory() as data_directory, tempfile.TemporaryDirectory() as source:

@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 
 const WAVEFORM_BUFFER_MESSAGE: u32 = 0;
 const INDEX_REPLY_MESSAGE: u32 = 2;
-pub const DEFAULT_BUFFER_SAMPLES: usize = 3_300;
+// Match upstream's output chunk size: about 100 ms at 11025 Hz.
+pub const DEFAULT_BUFFER_SAMPLES: usize = 1_100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineEvent {

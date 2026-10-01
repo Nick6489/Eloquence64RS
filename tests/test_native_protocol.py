@@ -37,13 +37,9 @@ class NativeProtocolTests(unittest.TestCase):
 		# Leftover worker commands after cancel must not start a new Speech
 		# Generation. Stop closes the current generation; a later addText is
 		# stale and should not emit BEGIN_GENERATION.
-		self.connection.send(
-			{"type": "command", "id": 2, "command": "addText", "payload": {"text": b"one"}}
-		)
+		self.connection.send({"type": "command", "id": 2, "command": "addText", "payload": {"text": b"one"}})
 		self.connection.send({"type": "command", "id": 3, "command": "stop", "payload": {}})
-		self.connection.send(
-			{"type": "command", "id": 4, "command": "addText", "payload": {"text": b"two"}}
-		)
+		self.connection.send({"type": "command", "id": 4, "command": "addText", "payload": {"text": b"two"}})
 		self.connection.send({"type": "command", "id": 5, "command": "synthesize", "payload": {}})
 		self.assertEqual(
 			[frame[0] for frame in self.module.frames(self.writer.getvalue())],
@@ -58,14 +54,10 @@ class NativeProtocolTests(unittest.TestCase):
 		)
 
 	def test_prepare_generation_after_stop_opens_a_new_generation(self):
-		self.connection.send(
-			{"type": "command", "id": 2, "command": "addText", "payload": {"text": b"one"}}
-		)
+		self.connection.send({"type": "command", "id": 2, "command": "addText", "payload": {"text": b"one"}})
 		self.connection.send({"type": "command", "id": 3, "command": "stop", "payload": {}})
 		self.connection.prepare_generation()
-		self.connection.send(
-			{"type": "command", "id": 4, "command": "addText", "payload": {"text": b"two"}}
-		)
+		self.connection.send({"type": "command", "id": 4, "command": "addText", "payload": {"text": b"two"}})
 		self.assertEqual(
 			[frame[0] for frame in self.module.frames(self.writer.getvalue())],
 			[
@@ -115,6 +107,12 @@ class NativeProtocolTests(unittest.TestCase):
 		kind, request_id, payload = list(self.module.frames(self.writer.getvalue()))[-1]
 		self.assertEqual((kind, request_id), (self.module.SET_PRESENCE_CONTOUR, 3))
 		self.assertEqual(payload, b"\x01")
+
+	def test_presence_command_preserves_the_third_contour_value(self):
+		self.connection.send(
+			{"type": "command", "id": 8, "command": "setPresenceContour", "payload": {"enabled": 2}}
+		)
+		self.assertEqual(list(self.module.frames(self.writer.getvalue()))[-1][2], b"\x02")
 
 	def test_dictionary_directory_command_encodes_builtin_reload(self):
 		self.connection.send(

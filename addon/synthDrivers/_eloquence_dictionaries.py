@@ -134,9 +134,14 @@ def update_profile(data_directory: str, profile: str) -> dict[str, int]:
 
 		target_directory = profile_directory(data_directory, profile)
 		assert target_directory is not None
+		comparison = _compare_dictionary_directories(target_directory, staging_directory)
 		_replace_directory(staging_directory, target_directory)
 		staging_directory = ""
-		return {"files": len(selected), "entries": entry_count}
+		return {
+			"files": len(selected),
+			"entries": entry_count,
+			**comparison,
+		}
 	finally:
 		try:
 			os.remove(archive_path)
@@ -185,6 +190,36 @@ def _entry_count(contents: bytes) -> int:
 	return sum(
 		1 for line in contents.splitlines() if line.strip() and not line.lstrip().startswith((b"#", b";"))
 	)
+
+
+def _dictionary_entries(directory: str) -> dict[tuple[str, bytes], bytes]:
+	"""Read entries keyed by dictionary volume and pronunciation key."""
+	entries = {}
+	for filename in dictionary_files(directory):
+		with open(os.path.join(directory, filename), "rb") as dictionary:
+			for line in dictionary.read().splitlines():
+				if not line.strip() or line.lstrip().startswith((b"#", b";")):
+					continue
+				key, separator, translation = line.partition(b"\t")
+				# Retain malformed non-comment lines in the comparison. Validation is
+				# deliberately limited to what ECI accepts today, so an upstream line
+				# without a tab must not silently disappear from the update summary.
+				if not separator:
+					translation = b""
+				entries[(filename.lower(), key)] = translation
+	return entries
+
+
+def _compare_dictionary_directories(old_directory: str, new_directory: str) -> dict[str, int]:
+	old_entries = _dictionary_entries(old_directory)
+	new_entries = _dictionary_entries(new_directory)
+	old_keys = set(old_entries)
+	new_keys = set(new_entries)
+	return {
+		"added": len(new_keys - old_keys),
+		"changed": sum(old_entries[key] != new_entries[key] for key in old_keys & new_keys),
+		"removed": len(old_keys - new_keys),
+	}
 
 
 def _replace_directory(staging_directory: str, target_directory: str) -> None:

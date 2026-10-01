@@ -64,6 +64,16 @@ class FakePlayer:
 		if onDone:
 			self.marker_callback = onDone
 
+	def sync(self):
+		self.events.append(("sync",))
+		if self.marker_callback:
+			callback, self.marker_callback = self.marker_callback, None
+			callback()
+
+	def idle(self):
+		self.sync()
+		self.events.append(("idle",))
+
 
 class FakeClient:
 	_sequence = 0
@@ -269,7 +279,7 @@ class AudioWorkerTests(unittest.TestCase):
 			],
 		)
 
-	def test_empty_index_marker_queues_non_blocking_playback_callback(self):
+	def test_index_attaches_to_real_audio_playback_callback(self):
 		module = _load_client_module()
 		events = []
 		module.onIndexReached = lambda index: events.append(("index", index))
@@ -282,10 +292,48 @@ class AudioWorkerTests(unittest.TestCase):
 
 		worker.run()
 
-		self.assertEqual(events, [("feed", b"audio"), ("feed", b"")])
+		self.assertEqual(events, [("feed", b"audio")])
 		self.assertIsNotNone(player.marker_callback)
 		player.marker_callback()
 		self.assertEqual(events[-1], ("index", 42))
+
+	def test_consecutive_indexes_sync_without_empty_audio_feeds(self):
+		module = _load_client_module()
+		events = []
+		module.onIndexReached = lambda index: events.append(("index", index))
+		audio_queue = queue.Queue()
+		for chunk in [(b"audio", None, False, 0), (b"", 42, False, 0), (b"", 43, False, 0), None]:
+			audio_queue.put(chunk)
+		module.AudioWorker(FakePlayer(events), audio_queue, FakeClient()).run()
+		self.assertEqual(events, [("feed", b"audio"), ("sync",), ("index", 42), ("index", 43)])
+
+	def test_final_event_drains_real_audio_before_done(self):
+		module = _load_client_module()
+		events = []
+		module.onIndexReached = lambda index: events.append(("index", index))
+		audio_queue = queue.Queue()
+		for chunk in [(b"audio", None, False, 0), (b"", 42, False, 0), (b"", None, True, 0), None]:
+			audio_queue.put(chunk)
+		module.AudioWorker(FakePlayer(events), audio_queue, FakeClient()).run()
+		self.assertEqual(events, [("feed", b"audio"), ("sync",), ("index", 42), ("idle",), ("index", None)])
+
+	def test_cancel_discards_held_audio_before_new_generation(self):
+		module = _load_client_module()
+		events = []
+		client = FakeClient()
+		audio_queue = queue.Queue()
+		audio_queue.put((b"old", None, False, 0))
+		original_get = audio_queue.get
+		def get(**kwargs):
+			if audio_queue.empty():
+				client._sequence = 1
+				audio_queue.put((b"new", None, False, 1))
+				audio_queue.put((b"", 42, False, 1))
+				audio_queue.put(None)
+			return original_get(**kwargs)
+		audio_queue.get = get
+		module.AudioWorker(FakePlayer(events), audio_queue, client).run()
+		self.assertEqual(events, [("feed", b"new")])
 
 	def test_waiting_command_does_not_block_stop_write(self):
 		module = _load_client_module()

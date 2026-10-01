@@ -63,5 +63,6 @@ lint = [
 	"ruff==0.15.14",
 ]
 unit-tests = [
+	"configobj>=5.0.9",
 	"pytest==9.0.3",
 ]

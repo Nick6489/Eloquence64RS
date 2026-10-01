@@ -58,7 +58,7 @@ rewritten. If the executable cannot
 start, authenticate, or initialize ECI, synth initialization fails with the
 cause logged; NVDA can then select its next available synthesizer.
 
-## Native sample rate and Presence contour
+## Native sample rate and sound contour
 
 The **Sample rate** synth setting independently selects Eloquence's classic
 11.025 kHz engine mode or its native 16 kHz engine mode. Native mode validates
@@ -66,18 +66,24 @@ small bundled patch descriptors against private staged copies of every voice
 file before ECI loads. A missing or incompatible patch aborts initialization;
 the installed voice files are never modified.
 
-The **Presence contour** checkbox is a separate tonal choice. When unchecked,
-native engine PCM passes through bit-for-bit. At the classic rate, checking it
-restores the established tonal contour and 2x reconstruction for 22.05 kHz
-playback. At native 16 kHz, it applies the rate-adjusted tonal contour directly
-without resampling.
+The **Sound contour** dropdown offers **Raw** and **Presence** at 11.025 kHz,
+and **Raw**, **Presence**, and **Smooth** at 16 kHz. Raw passes native engine
+PCM through bit-for-bit. Classic Presence retains the established contour and
+2x reconstruction for 22.05 kHz playback. Native Presence uses the original
+Beta 2 processing; Smooth uses the original Beta 4 processing. Both native
+contours keep 16 kHz playback without resampling.
+
+Each sample rate remembers its own contour selection, within each NVDA
+configuration profile. Switching rates restores that rate's previous choice.
+The former checkbox migrates to Raw at both rates when unchecked, or Presence
+at 11.025 kHz and Smooth at 16 kHz when checked. Smooth retains Beta 4's complete curve, including its added high shelf.
 
 Existing **Enhanced 22 kHz** selections are migrated automatically, including
 selections stored in individual NVDA configuration profiles: they become
-**Presence contour** enabled at the classic 11.025 kHz rate, preserving the
+**Presence** at the classic 11.025 kHz rate, preserving the
 user's existing 22.05 kHz processing without silently opting them into native
 16 kHz. Changing rate restarts the private engine while restoring the current
-language, voice variant, prosody, dictionary, and Presence setting.
+language, voice variant, prosody, dictionary, and contour selections.
 
 ## Pronunciation dictionaries
 
@@ -94,8 +100,10 @@ The Eloquence settings panel offers four isolated pronunciation profiles:
 
 Downloaded profiles are stored separately and replace only their own previous
 snapshot when updated. Selecting **Download or update dictionary** activates
-the chosen profile immediately; switching profiles and pressing **Apply** or
-**OK** also takes effect without restarting NVDA.
+the chosen profile immediately and reports how many pronunciation entries were
+added, changed, or removed. An identical download is reported as already up to
+date. Switching profiles and pressing **Apply** or **OK** also takes effect
+without restarting NVDA.
 
 ## Traditional Chinese Script Conversion
 

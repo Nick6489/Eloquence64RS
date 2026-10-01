@@ -48,6 +48,8 @@ except ImportError:
 		def __init__(self, value, label):
 			self.value = value
 			self.label = label
+			self.id = value
+			self.displayName = label
 
 
 from ctypes import *
@@ -147,7 +149,7 @@ _PROFILE_SETTING_IDS = (
 	"phrasePrediction",
 	"pauseMode",
 	"sampleRate",
-	"presenceContour",
+	"soundContour",
 )
 _BOOLEAN_PROFILE_SETTING_IDS = frozenset(("backquoteVoiceTags", "ABRDICT", "phrasePrediction"))
 _INTEGER_PROFILE_SETTING_IDS = frozenset(("rate", "pitch", "inflection", "volume", "hsz", "rgh", "bth"))
@@ -169,14 +171,14 @@ def _eloquence_settings_from(conf):
 		settings = conf["speech"]["eloquence"]
 	except (KeyError, TypeError):
 		return {}
-	result = {setting_id: settings[setting_id] for setting_id in _PROFILE_SETTING_IDS if setting_id in settings}
-	if "presenceContour" in result:
-		result["presenceContour"] = _coerce_presence_contour_setting(result["presenceContour"])
-	elif "audioQuality" in settings:
-		# audioQuality is deliberately not a supported setting anymore. Keeping it
-		# outside NVDA's Boolean config spec lets old standard/enhanced values load
-		# far enough for us to migrate them safely.
-		result["presenceContour"] = _coerce_presence_contour_setting(settings["audioQuality"])
+	result = {
+		setting_id: settings[setting_id] for setting_id in _PROFILE_SETTING_IDS if setting_id in settings
+	}
+	if "soundContour" in result:
+		result["soundContour"] = _coerce_sound_contour_setting(result["soundContour"])
+	else:
+		legacy = settings.get("presenceContour", settings.get("audioQuality", False))
+		result["soundContour"] = _legacy_sound_contour(legacy)
 	return result
 
 
@@ -200,6 +202,20 @@ def _coerce_presence_contour_setting(value):
 def _coerce_sample_rate_setting(value):
 	value = str(value).strip()
 	return "16000" if value in {"16000", "2", "native16"} else "11025"
+
+
+def _legacy_sound_contour(value):
+	return "presence|smooth" if _coerce_presence_contour_setting(value) else "raw|raw"
+
+
+def _coerce_sound_contour_setting(value):
+	"""Store both rate selections in one NVDA string setting, classic first."""
+	parts = str(value).replace(",", "|").split("|")
+	if len(parts) != 2:
+		return "raw|raw"
+	classic = parts[0] if parts[0] in {"raw", "presence"} else "raw"
+	native = parts[1] if parts[1] in {"raw", "presence", "smooth"} else "raw"
+	return f"{classic}|{native}"
 
 
 def _ensure_sample_rate_config_default():
@@ -235,8 +251,8 @@ def _ensure_sample_rate_config_default():
 
 
 def _coerce_raw_profile_setting(setting_id, value):
-	if setting_id == "presenceContour":
-		return _coerce_presence_contour_setting(value)
+	if setting_id == "soundContour":
+		return _coerce_sound_contour_setting(value)
 	if setting_id == "sampleRate":
 		return _coerce_sample_rate_setting(value)
 	if setting_id in _BOOLEAN_PROFILE_SETTING_IDS:
@@ -272,8 +288,11 @@ def _eloquence_settings_from_profile_layers(profiles):
 					)
 		# A value explicitly stored under the new key wins within this layer.
 		# Otherwise, translate the old choice value into the new checkbox value.
-		if "presenceContour" not in profile_settings and "audioQuality" in profile_settings:
-			settings["presenceContour"] = _coerce_presence_contour_setting(profile_settings["audioQuality"])
+		if "soundContour" not in profile_settings:
+			if "presenceContour" in profile_settings:
+				settings["soundContour"] = _legacy_sound_contour(profile_settings["presenceContour"])
+			elif "audioQuality" in profile_settings:
+				settings["soundContour"] = _legacy_sound_contour(profile_settings["audioQuality"])
 	return settings
 
 
@@ -439,8 +458,7 @@ def _apply_profile_snapshot(driver, profile_stack, settings):
 	_sync_profile_snapshot_to_config(profile_stack, settings)
 	log_profile_restore = log.info if corrected_settings else log.debug
 	log_profile_restore(
-		"Eloquence corrected isolated profile settings: profiles=%s, settings=%s, "
-		"rate=%s, raw ECI rate=%s",
+		"Eloquence corrected isolated profile settings: profiles=%s, settings=%s, rate=%s, raw ECI rate=%s",
 		profile_stack,
 		corrected_settings,
 		getattr(driver, "rate", None),
@@ -920,9 +938,7 @@ class EloquenceSettingsPanel(gui.settingsDialogs.SettingsPanel):
 	def _refreshDictionaryChoiceLabels(self):
 		selected_profile = self._selectedDictionaryProfile()
 		profile_labels = self._dictionaryProfileLabels()
-		self.dictionaryChoice.SetItems(
-			[profile_labels[profile] for profile in self.dictionaryProfiles]
-		)
+		self.dictionaryChoice.SetItems([profile_labels[profile] for profile in self.dictionaryProfiles])
 		self.dictionaryChoice.SetSelection(self.dictionaryProfiles.index(selected_profile))
 
 	def _updateDictionaryButtonState(self):
@@ -976,13 +992,25 @@ class EloquenceSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			result = _eloquence_dictionaries.update_profile(data_directory, profile)
 			self._activateDictionaryProfile(profile, reload=True)
 			self._refreshDictionaryChoiceLabels()
-			wx.MessageBox(
-				_(
-					# Translators: Reports the size of a newly downloaded pronunciation dictionary snapshot.
+			if result["added"] or result["changed"] or result["removed"]:
+				message = _(
+					# Translators: Reports how a downloaded pronunciation dictionary differs from the installed copy.
 					"Dictionary update successful.\n\n"
+					"Added entries: {added}\n"
+					"Changed pronunciations: {changed}\n"
+					"Removed entries: {removed}\n\n"
 					"Dictionary files: {files}\n"
-					"Pronunciation entries: {entries}"
-				).format(**result),
+					"Total pronunciation entries: {entries}"
+				).format(**result)
+			else:
+				message = _(
+					# Translators: Reports that a downloaded pronunciation dictionary is identical to the installed copy.
+					"Your dictionary is already up to date.\n\n"
+					"Dictionary files: {files}\n"
+					"Total pronunciation entries: {entries}"
+				).format(**result)
+			wx.MessageBox(
+				message,
 				# Translators: Title of a message dialog when updating a dictionary
 				_("Success"),
 				wx.OK | wx.ICON_INFORMATION,
@@ -1027,8 +1055,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		DriverSetting("pauseMode", _("Shorten &pauses"), defaultVal="0"),
 		# Translators: Selects Eloquence's native synthesis sample rate.
 		DriverSetting("sampleRate", _("Sample rate (&Q)"), defaultVal="11025"),
-		# Translators: A checkbox that applies Eloquence64RS's optional tonal contour.
-		BooleanDriverSetting("presenceContour", _("Presence &contour"), False),
+		# Translators: Selects the tonal contour for the current sample rate.
+		DriverSetting("soundContour", _("Sound &contour"), defaultVal="raw|raw"),
 	)
 	supportedCommands = {
 		IndexCommand,
@@ -1053,7 +1081,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	# Initialize _pause_mode at class level to prevent issues with setting restoration
 	_pause_mode = 0
 	_sampleRate = "11025"
-	_presenceContour = False
+	_soundContour = "raw|raw"
 
 	@classmethod
 	def check(cls):
@@ -1150,6 +1178,12 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		# capture them before calling NVDA's loader for the first time this session.
 		_capture_unseen_active_profile(active_stack)
 		_ensure_sample_rate_config_default()
+		# Capture legacy raw layers before the new string default is introduced.
+		section = config.conf["speech"][self.name]
+		if "soundContour" not in section:
+			section["soundContour"] = _legacy_sound_contour(
+				section.get("presenceContour", section.get("audioQuality", False)),
+			)
 		# Named profiles must be copied even earlier than their first activation.
 		# NVDA can mutate the incoming profile layer before constructing this new
 		# driver, so preload clean copies while the initial profile is still stable.
@@ -1392,10 +1426,64 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			return
 		_eloquence.set_sample_rate(int(value))
 		self._sampleRate = value
+		self._apply_sound_contour()
+		self._refresh_sound_contour_choices()
 		_remember_current_profile_setting(self, "sampleRate", value)
 
 	def _get_sampleRate(self):
 		return self._sampleRate
+
+	def _get_availableSoundcontours(self):
+		parts = self._soundContour.split("|")
+		index = 0 if self._sampleRate == "11025" else 1
+		labels = {"raw": _("Raw"), "presence": _("Presence"), "smooth": _("Smooth")}
+		options = ("raw", "presence") if index == 0 else ("raw", "presence", "smooth")
+		result = {}
+		for option in options:
+			selection = parts.copy()
+			selection[index] = option
+			key = "|".join(selection)
+			result[key] = StringParameterInfo(key, labels[option])
+		return result
+
+	def _get_soundContour(self):
+		return self._soundContour
+
+	def _set_soundContour(self, value):
+		value = _coerce_sound_contour_setting(value)
+		if value == self._soundContour:
+			self._apply_sound_contour()
+			return
+		self._soundContour = value
+		self._apply_sound_contour()
+		self._refresh_sound_contour_choices()
+		_remember_current_profile_setting(self, "soundContour", value)
+
+	def _apply_sound_contour(self):
+		index = 0 if self._sampleRate == "11025" else 1
+		selection = self._soundContour.split("|")[index]
+		_eloquence.set_presence_contour({"raw": 0, "smooth": 1, "presence": 2}[selection])
+
+	def _refresh_sound_contour_choices(self):
+		# NVDA's generic choice handler refreshes dependent settings only for
+		# voice changes. Refresh this existing native wx.Choice in place so the
+		# rate control retains focus and the dialog's normal Cancel/OK semantics.
+		def refresh():
+			if synthDriverHandler.getSynth() is not self:
+				return
+			pending = list(wx.GetTopLevelWindows())
+			while pending:
+				window = pending.pop()
+				pending.extend(window.GetChildren())
+				control = getattr(window, "soundContourList", None)
+				if control is None or getattr(window, "driver", None) is not self:
+					continue
+				options = list(self._get_availableSoundcontours().values())
+				window._soundContours = options
+				control.SetItems([option.displayName for option in options])
+				control.SetSelection([option.id for option in options].index(self._soundContour))
+
+		wx.CallAfter(refresh)
 
 	def _get_availablePausemodes(self):
 		return self._pauseModes
@@ -1406,17 +1494,6 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	def _get_pauseMode(self):
 		return str(self._pause_mode)
-
-	def _set_presenceContour(self, value):
-		enabled = _coerce_presence_contour_setting(value)
-		if enabled == self._presenceContour:
-			return
-		_eloquence.set_presence_contour(enabled)
-		self._presenceContour = enabled
-		_remember_current_profile_setting(self, "presenceContour", enabled)
-
-	def _get_presenceContour(self):
-		return self._presenceContour
 
 	_backquoteVoiceTags = False
 	_ABRDICT = False

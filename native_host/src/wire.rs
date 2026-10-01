@@ -31,7 +31,7 @@ pub enum ClientCommand {
     SetParam { parameter: i32, value: i32 },
     SetVoiceParam { parameter: i32, value: i32 },
     CopyVoice(i32),
-    SetPresenceContour(bool),
+    SetPresenceContour(u8),
     SetDictionaryDirectory { directory: String, reload: bool },
 }
 
@@ -72,7 +72,7 @@ impl ClientCommand {
                 value: payload.get_i32()?,
             },
             MessageKind::CopyVoice => Self::CopyVoice(payload.get_i32()?),
-            MessageKind::SetPresenceContour => Self::SetPresenceContour(payload.get_u8()? != 0),
+            MessageKind::SetPresenceContour => Self::SetPresenceContour(payload.get_u8()?),
             MessageKind::SetDictionaryDirectory => Self::SetDictionaryDirectory {
                 directory: payload.get_string()?.to_owned(),
                 reload: payload.get_u8()? != 0,
@@ -184,7 +184,7 @@ mod tests {
         let frame = Frame::new(MessageKind::SetPresenceContour, 9, vec![1]);
         assert_eq!(
             ClientCommand::decode(&frame).unwrap(),
-            ClientCommand::SetPresenceContour(true)
+            ClientCommand::SetPresenceContour(1)
         );
     }
 

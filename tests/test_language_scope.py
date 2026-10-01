@@ -213,7 +213,7 @@ class _EloquenceStub(types.ModuleType):
 		self.stopped = True
 
 	def set_presence_contour(self, enabled):
-		self.presence_contour_calls.append(bool(enabled))
+		self.presence_contour_calls.append(int(enabled))
 
 	def set_sample_rate(self, rate):
 		self.sample_rate_calls.append(int(rate))
@@ -239,11 +239,16 @@ def _install_nvda_stubs():
 	sys.modules["speech"] = speech
 
 	driver_handler = types.ModuleType("driverHandler")
-	driver_handler.NumericDriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(id=setting_id)
-	driver_handler.BooleanDriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(id=setting_id)
+	driver_handler.NumericDriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(
+		id=setting_id
+	)
+	driver_handler.BooleanDriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(
+		id=setting_id
+	)
 	driver_handler.DriverSetting = lambda setting_id, *args, **kwargs: types.SimpleNamespace(
 		id=setting_id,
 		displayName=args[0] if args else None,
+		configSpec=f"string(default={kwargs.get('defaultVal')})",
 	)
 	sys.modules["driverHandler"] = driver_handler
 
@@ -372,7 +377,13 @@ class LanguageScopeTests(unittest.TestCase):
 			mock.patch.object(
 				module._eloquence_dictionaries,
 				"update_profile",
-				return_value={"files": 1, "entries": 2},
+				return_value={
+					"files": 1,
+					"entries": 2,
+					"added": 1,
+					"changed": 1,
+					"removed": 0,
+				},
 			),
 			mock.patch.object(
 				module._eloquence_dictionaries,
@@ -390,6 +401,34 @@ class LanguageScopeTests(unittest.TestCase):
 			panel.dictionaryChoice.items[2],
 			"Community dictionaries (extensive; not downloaded)",
 		)
+		message = module.wx.MessageBox.call_args.args[0]
+		self.assertIn("Added entries: 1", message)
+		self.assertIn("Changed pronunciations: 1", message)
+		self.assertIn("Removed entries: 0", message)
+
+		module.wx.MessageBox.reset_mock()
+		with (
+			mock.patch.object(
+				module._eloquence_dictionaries,
+				"update_profile",
+				return_value={
+					"files": 1,
+					"entries": 2,
+					"added": 0,
+					"changed": 0,
+					"removed": 0,
+				},
+			),
+			mock.patch.object(
+				module._eloquence_dictionaries,
+				"active_directory",
+				return_value=r"C:\dictionaries\alternative",
+			),
+		):
+			panel.onUpdate(None)
+
+		message = module.wx.MessageBox.call_args.args[0]
+		self.assertIn("already up to date", message)
 
 	def test_dictionary_profile_save_supports_nvda_aggregated_config_section(self):
 		module, _eloquence_stub, _preprocess_calls = _load_driver()
@@ -410,23 +449,128 @@ class LanguageScopeTests(unittest.TestCase):
 		self.assertEqual(section["dictionary_profile"], profile)
 		self.assertIn("dictionary_name", section.values)
 
-	def test_presence_contour_uses_a_new_boolean_schema_key(self):
+	def test_sound_contour_default_passes_real_configobj_validation(self):
+		from configobj import ConfigObj
+		from configobj.validate import Validator
+
+		module, _, _ = _load_driver()
+		setting = next(s for s in module.SynthDriver.supportedSettings if s.id == "soundContour")
+		validator = Validator()
+		self.assertEqual(validator.get_default_value(setting.configSpec), "raw|raw")
+		for value in ("raw|raw", "presence|smooth", "raw|presence"):
+			self.assertEqual(validator.check(setting.configSpec, value), value)
+		conf = ConfigObj(configspec={"soundContour": setting.configSpec})
+		self.assertIs(conf.validate(validator, copy=True), True)
+		self.assertEqual(conf["soundContour"], "raw|raw")
+		conf["soundContour"] = "presence|smooth"
+		loaded = ConfigObj(conf.write(), configspec={"soundContour": setting.configSpec})
+		self.assertIs(loaded.validate(validator), True)
+		self.assertEqual(loaded["soundContour"], "presence|smooth")
+
+	def test_sound_contour_replaces_the_checkbox_schema(self):
 		module, _eloquence_stub, _preprocess_calls = _load_driver()
 
 		setting_ids = [setting.id for setting in module.SynthDriver.supportedSettings]
-		self.assertIn("presenceContour", setting_ids)
+		self.assertIn("soundContour", setting_ids)
+		self.assertNotIn("presenceContour", setting_ids)
 		self.assertIn("sampleRate", setting_ids)
 		self.assertNotIn("audioQuality", setting_ids)
 
-	def test_presence_contour_setting_updates_backend_once(self):
+	def test_sound_contour_setting_applies_presence(self):
 		module, eloquence_stub, _preprocess_calls = _load_driver()
 		driver = _new_driver(module)
 
-		driver._set_presenceContour(True)
-		driver._set_presenceContour(True)
+		driver._set_soundContour("presence|raw")
+		driver._set_soundContour("presence|raw")
 
-		self.assertIs(driver._get_presenceContour(), True)
-		self.assertEqual(eloquence_stub.presence_contour_calls, [True])
+		self.assertEqual(driver._get_soundContour(), "presence|raw")
+		self.assertEqual(eloquence_stub.presence_contour_calls, [2, 2])
+
+	def test_sound_choices_and_memory_are_independent_for_each_rate(self):
+		module, backend, _ = _load_driver()
+		driver = _new_driver(module)
+		self.assertEqual(
+			[x.label for x in driver._get_availableSoundcontours().values()], ["Raw", "Presence"]
+		)
+		driver._set_sampleRate("16000")
+		self.assertEqual(
+			[x.label for x in driver._get_availableSoundcontours().values()], ["Raw", "Presence", "Smooth"]
+		)
+		driver._set_soundContour("raw|smooth")
+		driver._set_sampleRate("11025")
+		self.assertEqual(backend.presence_contour_calls[-1], 0)
+		driver._set_soundContour("presence|smooth")
+		driver._set_sampleRate("16000")
+		self.assertEqual(backend.presence_contour_calls[-1], 1)
+		self.assertEqual(driver._get_soundContour(), "presence|smooth")
+
+	def test_explicit_sound_choice_wins_over_legacy_in_each_profile_layer(self):
+		module, _, _ = _load_driver()
+		profiles = [
+			{"speech": {"eloquence": {"presenceContour": True}}},
+			{"speech": {"eloquence": {"soundContour": "raw|presence", "presenceContour": False}}},
+		]
+		self.assertEqual(
+			module._eloquence_settings_from_profile_layers(profiles), {"soundContour": "raw|presence"}
+		)
+
+	def test_cancel_restores_both_rate_choices_and_selected_rate(self):
+		module, backend, _ = _load_driver()
+		driver_class = type(
+			"ContourDriver",
+			(module.SynthDriver,),
+			{
+				"sampleRate": property(
+					module.SynthDriver._get_sampleRate, module.SynthDriver._set_sampleRate
+				),
+				"soundContour": property(
+					module.SynthDriver._get_soundContour, module.SynthDriver._set_soundContour
+				),
+			},
+		)
+		driver = driver_class.__new__(driver_class)
+		driver._sampleRate = "16000"
+		driver._soundContour = "raw|smooth"
+		stack = ("normal configuration",)
+		original = {"sampleRate": "16000", "soundContour": "raw|smooth"}
+		module.config.conf = _ConfigRoot({"speech": {"eloquence": original.copy()}}, profiles=[{}])
+		module._current_profile_stack = stack
+		module._profile_settings_by_stack[stack] = original.copy()
+		driver.sampleRate = "11025"
+		driver.soundContour = "presence|smooth"
+		self.assertEqual(len(module._pending_profile_setting_changes), 2)
+		module._discard_pending_profile_settings(stack)
+		module._apply_profile_snapshot(driver, stack, module._profile_settings_by_stack[stack])
+		self.assertEqual(driver.sampleRate, "16000")
+		self.assertEqual(driver.soundContour, "raw|smooth")
+		self.assertEqual(backend.presence_contour_calls[-1], 1)
+		self.assertEqual(module.config.conf["speech"]["eloquence"], original)
+
+	def test_saved_pair_survives_profile_loading_at_either_rate(self):
+		module, _, _ = _load_driver()
+		for rate in ("11025", "16000"):
+			profile = {"speech": {"eloquence": {"sampleRate": rate, "soundContour": "presence|smooth"}}}
+			self.assertEqual(
+				module._eloquence_settings_from_profile_layers([profile]),
+				{
+					"sampleRate": rate,
+					"soundContour": "presence|smooth",
+				},
+			)
+
+	def test_rate_change_refreshes_existing_choice_without_moving_focus(self):
+		module, _, _ = _load_driver()
+		driver = _new_driver(module)
+		module.synthDriverHandler.getSynth = lambda: driver
+		choice = mock.Mock()
+		panel = types.SimpleNamespace(driver=driver, soundContourList=choice, GetChildren=lambda: [])
+		module.wx.GetTopLevelWindows = lambda: [panel]
+		driver._set_soundContour("raw|smooth")
+		driver._set_sampleRate("16000")
+		choice.SetItems.assert_called_with(["Raw", "Presence", "Smooth"])
+		choice.SetSelection.assert_called_with(2)
+		self.assertEqual([x.id for x in panel._soundContours], ["raw|raw", "raw|presence", "raw|smooth"])
+		choice.SetFocus.assert_not_called()
 
 	def test_native_sample_rate_setting_updates_backend_once(self):
 		module, eloquence_stub, _preprocess_calls = _load_driver()
@@ -466,7 +610,7 @@ class LanguageScopeTests(unittest.TestCase):
 
 		self.assertEqual(
 			module._eloquence_settings_from_profile_layers(profiles),
-			{"presenceContour": True},
+			{"soundContour": "presence|smooth"},
 		)
 
 	def test_new_presence_contour_value_wins_over_legacy_value_in_same_profile(self):
@@ -484,7 +628,7 @@ class LanguageScopeTests(unittest.TestCase):
 
 		self.assertEqual(
 			module._eloquence_settings_from_profile_layers(profiles),
-			{"presenceContour": False},
+			{"soundContour": "raw|raw"},
 		)
 
 	def test_named_legacy_value_overrides_base_presence_contour(self):
@@ -496,7 +640,7 @@ class LanguageScopeTests(unittest.TestCase):
 
 		self.assertEqual(
 			module._eloquence_settings_from_profile_layers(profiles),
-			{"presenceContour": True},
+			{"soundContour": "presence|smooth"},
 		)
 
 	def test_initialization_keeps_legacy_value_captured_before_boolean_default(self):
@@ -526,8 +670,8 @@ class LanguageScopeTests(unittest.TestCase):
 		module._ensure_profile_isolation_handler()
 
 		self.assertEqual(
-			module._profile_settings_by_stack[stack]["presenceContour"],
-			True,
+			module._profile_settings_by_stack[stack]["soundContour"],
+			"presence|smooth",
 		)
 
 	def test_system_config_host_hash_match_is_not_a_mismatch(self):
