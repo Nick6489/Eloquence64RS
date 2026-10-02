@@ -276,6 +276,7 @@ def _install_nvda_stubs():
 	wx.ICON_INFORMATION = 4
 	wx.ICON_ERROR = 8
 	wx.CallAfter = mock.Mock(side_effect=lambda func, *args, **kwargs: func(*args, **kwargs))
+	wx.GetApp = mock.Mock(return_value=object())
 	wx.CallLater = mock.Mock(side_effect=lambda _delay, func, *args, **kwargs: func(*args, **kwargs))
 	sys.modules["wx"] = wx
 	sys.modules["winsound"] = types.ModuleType("winsound")
@@ -557,6 +558,19 @@ class LanguageScopeTests(unittest.TestCase):
 					"soundContour": "presence|smooth",
 				},
 			)
+
+	def test_saved_contour_and_rate_restore_before_wx_app_exists(self):
+		module, backend, _ = _load_driver()
+		driver = _new_driver(module)
+		driver._loading_profile_settings = True
+		module.wx.GetApp.return_value = None
+		module.wx.CallAfter.side_effect = AssertionError("GUI scheduling before wx.App exists")
+		driver._set_soundContour("presence|smooth")
+		driver._set_sampleRate("16000")
+		self.assertEqual(driver._get_soundContour(), "presence|smooth")
+		self.assertEqual(driver._get_sampleRate(), "16000")
+		self.assertEqual(backend.presence_contour_calls, [2, 1])
+		module.wx.CallAfter.assert_not_called()
 
 	def test_rate_change_refreshes_existing_choice_without_moving_focus(self):
 		module, _, _ = _load_driver()

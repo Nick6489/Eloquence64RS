@@ -1465,6 +1465,10 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		_eloquence.set_presence_contour({"raw": 0, "smooth": 1, "presence": 2}[selection])
 
 	def _refresh_sound_contour_choices(self):
+		# NVDA restores synth settings before creating wx.App at startup.
+		# No settings controls exist yet, and wx.CallAfter requires that app.
+		if wx.GetApp() is None:
+			return
 		# NVDA's generic choice handler refreshes dependent settings only for
 		# voice changes. Refresh this existing native wx.Choice in place so the
 		# rate control retains focus and the dialog's normal Cancel/OK semantics.
