@@ -134,7 +134,6 @@ impl PreparedEci {
                 return Err(AssetError::MissingDataFile(source));
             }
             let destination = directory.join(filename);
-            fs::copy(&source, &destination)?;
             if native_16khz
                 && destination
                     .extension()
@@ -145,10 +144,13 @@ impl PreparedEci {
                 if !patch_path.is_file() {
                     return Err(AssetError::MissingPatch(patch_path));
                 }
-                let original = fs::read(&destination)?;
+                let original = fs::read(&source)?;
                 let patch = fs::read(&patch_path)?;
                 let transformed = apply_p16(&original, &patch, &patch_path)?;
+                // Patch in memory and write once: copying first doubled disk writes.
                 fs::write(destination, transformed)?;
+            } else {
+                fs::copy(&source, &destination)?;
             }
         }
         let staged_directory = short_path(directory);
@@ -371,6 +373,24 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "manual timing against bundled proprietary assets"]
+    fn benchmark_native_preparation() {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../addon/synthDrivers/eloquence");
+        let mut timings = Vec::new();
+        for _ in 0..11 {
+            let start = std::time::Instant::now();
+            let prepared = PreparedEci::create(&data.join("ECI.DLL"), &data, true).unwrap();
+            timings.push(start.elapsed());
+            drop(prepared);
+        }
+        timings.sort();
+        eprintln!(
+            "16 kHz asset preparation: median {:?}, range {:?}..{:?}",
+            timings[5], timings[0], timings[10]
+        );
+    }
+
+    #[test]
     fn preparation_patches_a_copy_and_preserves_the_source_ini() {
         let root =
             std::env::temp_dir().join(format!("eloquence-assets-test-{}", std::process::id()));
@@ -430,6 +450,40 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn native_preparation_preserves_sources_and_validates_patch() {
+        let root = std::env::temp_dir().join(format!(
+            "eloquence-native-assets-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mut patch = b"P16D".to_vec();
+        for value in [8_u32, 10, 1, 2, 2, 4] {
+            patch.extend_from_slice(&value.to_le_bytes());
+        }
+        patch.extend_from_slice(b"cdWXYZ");
+        let ini = "[1.0]\nPath=C:\\dummy\\enu.syn\nPath_Rom=C:\\dummy\\jpnrom.dll\n";
+        fs::write(root.join("ECI.DLL"), b"test dll").unwrap();
+        fs::write(root.join("ECI.INI"), ini).unwrap();
+        fs::write(root.join("enu.syn"), b"abcdefgh").unwrap();
+        fs::write(root.join("enu.p16"), &patch).unwrap();
+        fs::write(root.join("jpnrom.dll"), b"rom data").unwrap();
+        let prepared = PreparedEci::create(&root.join("ECI.DLL"), &root, true).unwrap();
+        let staged = prepared.dll_path().parent().unwrap().to_owned();
+        assert_eq!(fs::read(staged.join("enu.syn")).unwrap(), b"abWXYZefgh");
+        assert_eq!(fs::read(staged.join("jpnrom.dll")).unwrap(), b"rom data");
+        assert_eq!(fs::read(root.join("enu.syn")).unwrap(), b"abcdefgh");
+        assert_eq!(fs::read(root.join("enu.p16")).unwrap(), patch);
+        assert_eq!(fs::read_to_string(root.join("ECI.INI")).unwrap(), ini);
+        drop(prepared);
+        assert!(!staged.exists());
+        fs::write(root.join("enu.syn"), b"ab!defgh").unwrap();
+        assert!(matches!(
+            PreparedEci::create(&root.join("ECI.DLL"), &root, true),
+            Err(AssetError::InvalidPatch { .. })
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn native_patch_is_validated_and_applied_only_to_staged_copy() {
         let original = b"abcdefgh";

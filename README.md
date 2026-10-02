@@ -64,7 +64,9 @@ The **Sample rate** synth setting independently selects Eloquence's classic
 11.025 kHz engine mode or its native 16 kHz engine mode. Native mode validates
 small bundled patch descriptors against private staged copies of every voice
 file before ECI loads. A missing or incompatible patch aborts initialization;
-the installed voice files are never modified.
+the installed voice files are never modified. Voice files are patched in memory
+and written to staging once, avoiding a redundant disk copy and reread while
+keeping a single installed dataset.
 
 The **Sound contour** dropdown offers **Raw** and **Presence** at 11.025 kHz,
 and **Raw**, **Presence**, and **Smooth** at 16 kHz. Raw passes native engine
