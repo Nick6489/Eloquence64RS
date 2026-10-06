@@ -303,6 +303,8 @@ class EloquenceHostClient:
 			nvwave.WavePlayer.MIN_BUFFER_MS = 1500
 			player = nvwave.WavePlayer(1, sample_rate, 16, outputDevice=device, buffered=True)
 		self._player = player
+		# Keep shutdown markers and late audio isolated to the previous worker.
+		self._audio_queue = queue.Queue()
 		self._audio_worker = AudioWorker(player, self._audio_queue, self)
 		self._audio_worker.start()
 

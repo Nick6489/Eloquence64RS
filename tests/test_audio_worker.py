@@ -80,6 +80,48 @@ class FakeClient:
 
 
 class AudioWorkerTests(unittest.TestCase):
+	def test_reopening_audio_discards_stop_markers_and_late_host_audio(self):
+		module = _load_client_module()
+		module.config.conf = {"audio": {"outputDevice": "test-device"}}
+		client = module.EloquenceHostClient()
+		old_queue = client._audio_queue
+		old_worker = module.AudioWorker(Mock(), old_queue, client)
+		original_get = old_queue.get
+
+		def stop_during_chunk(**kwargs):
+			chunk = original_get(**kwargs)
+			old_worker.stop()
+			return chunk
+
+		old_queue.get = stop_during_chunk
+		old_queue.put((b"cancelled", None, False, 0))
+		old_worker.start()
+		old_worker.join(timeout=2)
+		self.assertFalse(old_worker.is_alive())
+		self.assertIsNone(original_get(timeout=1))
+		# Restore the unconsumed marker and simulate audio still arriving after shutdown.
+		old_queue.put(None)
+		client._handle_event("audio", {"data": b"late"})
+
+		for _ in range(3):
+			played = threading.Event()
+			player = Mock()
+			player.feed.side_effect = lambda *args, **kwargs: played.set()
+			module.nvwave.WavePlayer = Mock(return_value=player)
+			try:
+				client.initialize_audio()
+				self.assertIsNot(client._audio_queue, old_queue)
+				client._handle_event("audio", {"data": b"new"})
+				client._handle_event("audio", {"final": True})
+				self.assertTrue(played.wait(timeout=2))
+				self.assertTrue(client._audio_worker.is_alive())
+				player.feed.assert_called_once_with(b"new", onDone=None)
+			finally:
+				client.close_audio()
+			old_queue = client._audio_queue
+			old_queue.put(None)
+			client._handle_event("audio", {"data": b"late"})
+
 	def test_permanent_voice_parameter_waits_for_host_readback(self):
 		module = _load_client_module()
 		client = Mock()

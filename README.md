@@ -6,6 +6,9 @@ back to NVDA.
 
 ## Project status
 
+The 19.5-RS release is prepared for final installation testing. See the
+[19.5-RS release notes](docs/release-notes/v19.5-RS.md) for changes and upgrade details.
+
 This is an unofficial, unsupported, community-maintained add-on, provided as
 is and used at your own risk. Release packages include legacy proprietary
 Eloquence binaries. Eloquence64RS replaces Eloquence64 and should not be

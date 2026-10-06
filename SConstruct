@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 import buildVars  # noqa: E402
 
 env = Environment(ENV=os.environ, tools=["NVDATool"])
+env["excludePatterns"] = ("*.pyc", "*.pyo", "__pycache__/*")
 env.Append(addon_info=buildVars.addon_info)
 env.Append(**buildVars.addon_info)
 
