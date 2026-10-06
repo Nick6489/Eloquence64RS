@@ -12,6 +12,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class AddonPackagingTests(unittest.TestCase):
+	def test_release_tag_uses_stable_manifest_and_asset_version(self):
+		with (
+			mock.patch.dict(buildVars.os.environ, {}, clear=True),
+			mock.patch.object(
+				buildVars,
+				"_run_git",
+				return_value=mock.Mock(returncode=0, stdout=b"v19.5-RS\n"),
+			),
+		):
+			self.assertEqual(buildVars._get_version(), "19.5-RS")
+
 	def test_build_version_can_be_overridden_for_unambiguous_test_packages(self):
 		with mock.patch.dict(
 			buildVars.os.environ,

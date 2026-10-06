@@ -58,7 +58,7 @@ def _addon_tree_fingerprint(root=Path("addon")):
 
 
 def _get_version():
-	"""Use release tags exactly; otherwise identify the 19.5 development source.
+	"""Use release tags without their v prefix; otherwise identify development source.
 
 	The source hash includes tracked changes and all packaged file content, so
 	iterative test packages cannot accidentally reuse a previous identity.
@@ -69,7 +69,7 @@ def _get_version():
 	try:
 		result = _run_git("describe", "--tags", "--exact-match")
 		if result.returncode == 0:
-			return result.stdout.decode().strip()
+			return result.stdout.decode().strip().removeprefix("v")
 	except FileNotFoundError:
 		pass
 	return f"{_DEVELOPMENT_VERSION}-{_get_development_source_hash()}"
