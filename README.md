@@ -6,6 +6,17 @@ back to NVDA.
 
 ## Project status
 
+Eloquence64RS is in **maintenance mode**. New engine features and OpenEVV
+audio work take place in [fastfinge/eloquence_64](https://github.com/fastfinge/eloquence_64).
+This repository remains available for fixes to the existing Rust-host add-on.
+
+The contour dependency is frozen at module version **1.1.0**, commit
+`24b9cb121aa3c4f55a6aaacd640f1fe8f03e020a`, as shipped in 19.5.1-RS.
+`build_contours.cmd` checks out that exact commit. Changes to the contour
+module's default branch, including support for OpenEVV's higher sample rates,
+do not change Eloquence64RS builds. Updating this pin is a deliberate
+maintenance decision, not an automatic dependency update.
+
 The current stable release is 19.5.1-RS. See the
 [19.5.1-RS release notes](docs/release-notes/v19.5.1-RS.md) for changes and upgrade details.
 

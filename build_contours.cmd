@@ -2,6 +2,7 @@
 setlocal
 cd /d "%~dp0"
 rem Pinned independent module release; never build an unreviewed moving branch.
+rem Maintenance freeze: contours 1.1.0 as shipped in Eloquence64RS 19.5.1-RS.
 set "contour_revision=24b9cb121aa3c4f55a6aaacd640f1fe8f03e020a"
 if not exist "build\contours\.git" (
     git clone https://github.com/Nick6489/eloquence-contours.git build\contours

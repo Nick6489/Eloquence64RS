@@ -1,3 +1,13 @@
+## Maintenance scope
+
+Eloquence64RS is in maintenance mode. New OpenEVV features and contour work
+belong in fastfinge/eloquence_64 and the independent eloquence-contours repository.
+Keep the contour dependency pinned to 24b9cb121aa3c4f55a6aaacd640f1fe8f03e020a
+(module 1.1.0, shipped in add-on 19.5.1-RS). Do not follow a moving module branch
+or update this pin as routine dependency maintenance.
+
+## NVDA references
+
 * You can find the code for NVWave at: https://github.com/nvaccess/nvda/blob/master/source/nvwave.py
 * The code for Say all in NVDA is at: https://github.com/nvaccess/nvda/blob/master/source/speech/sayAll.py
 * the speech manager at: https://github.com/nvaccess/nvda/blob/master/source/speech/speech.py
