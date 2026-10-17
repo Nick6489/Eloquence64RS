@@ -1,7 +1,6 @@
 //! Safe ownership and callback handling around the dynamically loaded ECI API.
 
 use crate::assets::system_ansi_path;
-use crate::audio::{AudioProcessor, PresenceContour};
 use crate::dictionaries;
 use crate::eci::{EciApi, EciCallbackReturn, EciDictionaryHandle, EciHandle, EciStop};
 use crate::progress::{ProgressEvent, ProgressTracker, FINAL_INDEX};
@@ -95,7 +94,6 @@ impl Error for EngineError {}
 
 struct CallbackContext {
     output_buffer: Box<[i16]>,
-    audio_processor: Mutex<AudioProcessor>,
     progress: Mutex<ProgressTracker>,
     events: SyncSender<EngineEvent>,
     cancellation_requested: Arc<AtomicBool>,
@@ -208,11 +206,8 @@ fn handle_audio_callback(context: &CallbackContext, sample_count: i32) -> EciCal
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .current_generation();
     if let Some(generation) = generation {
-        let samples = context
-            .audio_processor
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .process(&context.output_buffer[..sample_count]);
+        // Contours run in the caller's DLL. The host always sends raw PCM.
+        let samples = context.output_buffer[..sample_count].to_vec();
         if context
             .events
             .try_send(EngineEvent::Audio {
@@ -268,7 +263,7 @@ impl EciEngine {
     pub fn new(
         api: EciApi,
         language_id: i32,
-        sample_rate: u32,
+        _sample_rate: u32,
         events: SyncSender<EngineEvent>,
     ) -> Result<Self, EngineError> {
         let handle = unsafe { (api.new_ex)(language_id) };
@@ -278,7 +273,6 @@ impl EciEngine {
 
         let mut callback_context = Box::new(CallbackContext {
             output_buffer: vec![0_i16; DEFAULT_BUFFER_SAMPLES].into_boxed_slice(),
-            audio_processor: Mutex::new(AudioProcessor::new(sample_rate)),
             progress: Mutex::new(ProgressTracker::default()),
             events,
             cancellation_requested: Arc::new(AtomicBool::new(false)),
@@ -324,19 +318,6 @@ impl EciEngine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .begin(generation);
-        self.callback_context
-            .audio_processor
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .reset();
-    }
-
-    pub fn set_presence_contour(&self, contour: PresenceContour) {
-        self.callback_context
-            .audio_processor
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .set_contour(contour);
     }
 
     pub fn add_text(&self, text: &[u8]) -> Result<(), EngineError> {
@@ -576,7 +557,6 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(64);
         let context = Box::new(CallbackContext {
             output_buffer: vec![1, -2, 3, -4].into_boxed_slice(),
-            audio_processor: Mutex::new(AudioProcessor::default()),
             progress: Mutex::new(ProgressTracker::default()),
             events: sender,
             cancellation_requested: Arc::new(AtomicBool::new(false)),
@@ -602,14 +582,9 @@ mod tests {
     }
 
     #[test]
-    fn audio_callback_resamples_classic_presence_contour() {
+    fn audio_callback_preserves_raw_sample_count() {
         let (context, receiver) = context();
         context.progress.lock().unwrap().begin(8);
-        context
-            .audio_processor
-            .lock()
-            .unwrap()
-            .set_contour(PresenceContour::Enabled);
         assert_eq!(
             handle_audio_callback(&context, 3),
             EciCallbackReturn::Processed
@@ -617,7 +592,7 @@ mod tests {
         let EngineEvent::Audio { samples, .. } = receiver.recv().unwrap() else {
             panic!("expected audio event");
         };
-        assert_eq!(samples.len(), 6);
+        assert_eq!(samples, vec![1, -2, 3]);
     }
 
     #[test]

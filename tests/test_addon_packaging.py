@@ -33,7 +33,7 @@ class AddonPackagingTests(unittest.TestCase):
 				"v19.1.1-RS-profile-rate-order-test2",
 			)
 
-	def test_untagged_build_uses_19_5_source_hash(self):
+	def test_untagged_build_uses_19_5_1_source_hash(self):
 		with (
 			mock.patch.dict(buildVars.os.environ, {}, clear=True),
 			mock.patch.object(
@@ -43,7 +43,7 @@ class AddonPackagingTests(unittest.TestCase):
 			),
 			mock.patch.object(buildVars, "_get_development_source_hash", return_value="12ab34cd"),
 		):
-			self.assertEqual(buildVars._get_version(), "v19.5-RS-dev-12ab34cd")
+			self.assertEqual(buildVars._get_version(), "v19.5.1-RS-dev-12ab34cd")
 
 	def test_addon_tree_fingerprint_includes_untracked_assets_but_not_manifest(self):
 		with tempfile.TemporaryDirectory() as root:
@@ -73,6 +73,11 @@ class AddonPackagingTests(unittest.TestCase):
 			[name for name in bundled_files if name.endswith("eloquence_host32.exe")],
 			["synthDrivers/eloquence_host32.exe"],
 		)
+		for name in (
+			"eloquence_contours.dll", "eloquence_contours32.dll", "_eloquence_contours.py",
+			"contours-LICENSE.txt", "contours-COPYING.txt",
+		):
+			self.assertIn(f"synthDrivers/{name}", bundled_files)
 		for language in ("DEU", "ENG", "ENU", "ESM", "ESP", "FIN", "FRA", "FRC", "ITA", "PTB", "chs", "jpn", "kor"):
 			with self.subTest(native_patch=language):
 				self.assertIn(f"synthDrivers/eloquence/{language}.p16", bundled_files)

@@ -7,7 +7,7 @@ import threading
 from typing import BinaryIO, Dict, Iterable, Tuple
 
 MAGIC = b"ELQH"
-VERSION = 3
+VERSION = 4  # Raw PCM only; the client applies the contour DLL.
 HEADER = struct.Struct("<4sHHIII")
 MAX_PAYLOAD = 4 * 1024 * 1024
 AUTH_KEY_BYTES = 16

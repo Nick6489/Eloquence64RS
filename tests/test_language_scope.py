@@ -491,7 +491,8 @@ class LanguageScopeTests(unittest.TestCase):
 		module, backend, _ = _load_driver()
 		driver = _new_driver(module)
 		self.assertEqual(
-			[x.label for x in driver._get_availableSoundcontours().values()], ["Raw", "Presence"]
+			[x.label for x in driver._get_availableSoundcontours().values()],
+			["Raw", "Presence", "Presence treble"]
 		)
 		driver._set_sampleRate("16000")
 		self.assertEqual(
@@ -504,6 +505,20 @@ class LanguageScopeTests(unittest.TestCase):
 		driver._set_sampleRate("16000")
 		self.assertEqual(backend.presence_contour_calls[-1], 1)
 		self.assertEqual(driver._get_soundContour(), "presence|smooth")
+
+	def test_treble_is_saved_for_classic_and_never_offered_at_native_rate(self):
+		module, backend, _ = _load_driver()
+		driver = _new_driver(module)
+		driver._set_soundContour("treble|smooth")
+		self.assertEqual(backend.presence_contour_calls[-1], 3)
+		driver._set_sampleRate("16000")
+		self.assertEqual(backend.presence_contour_calls[-1], 1)
+		self.assertNotIn("Presence treble", [x.label for x in driver._get_availableSoundcontours().values()])
+		driver._set_sampleRate("11025")
+		self.assertEqual(backend.presence_contour_calls[-1], 3)
+		self.assertEqual(driver._get_soundContour(), "treble|smooth")
+		self.assertEqual(module._coerce_sound_contour_setting("presence|smooth"), "presence|smooth")
+		self.assertEqual(module._coerce_sound_contour_setting("raw|treble"), "raw|raw")
 
 	def test_explicit_sound_choice_wins_over_legacy_in_each_profile_layer(self):
 		module, _, _ = _load_driver()

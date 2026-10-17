@@ -156,6 +156,11 @@ class NativeProtocolTests(unittest.TestCase):
 		self.assertEqual(self.connection.recv()["payload"]["index"], 42)
 		self.assertTrue(self.connection.recv()["payload"]["final"])
 
+	def test_previous_host_protocol_is_rejected_before_audio_can_be_processed_twice(self):
+		old_header = self.module.HEADER.pack(self.module.MAGIC, 3, self.module.HELLO_ACK, 1, 0, 0)
+		with self.assertRaises(self.module.NativeHostProtocolError):
+			self.module.NativeHostConnection(io.BytesIO(old_header), io.BytesIO(), self.key)
+
 
 if __name__ == "__main__":
 	unittest.main()

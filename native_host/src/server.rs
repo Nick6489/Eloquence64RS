@@ -1,7 +1,6 @@
 //! Single-client host server over inherited stdin/stdout pipes.
 
 use crate::assets::PreparedEci;
-use crate::audio::PresenceContour;
 use crate::eci::EciApi;
 use crate::engine::{EciEngine, EngineEvent, StopController};
 use crate::protocol::{Frame, MessageKind, ProtocolError, AUTH_KEY_LEN};
@@ -163,13 +162,11 @@ impl Runtime {
                 Ok(self.state_payload())
             }
             ClientCommand::SetPresenceContour(enabled) => {
-                let contour = match enabled {
-                    1 => PresenceContour::Enabled,
-                    2 => PresenceContour::Presence,
-                    _ => PresenceContour::Disabled,
-                };
-                self.engine.set_presence_contour(contour);
-                Ok(Vec::new())
+                if enabled == 0 {
+                    Ok(Vec::new())
+                } else {
+                    Err("contours are processed by the client DLL".to_owned())
+                }
             }
             ClientCommand::SetDictionaryDirectory { directory, reload } => {
                 self.dictionary_directory = if directory.is_empty() {

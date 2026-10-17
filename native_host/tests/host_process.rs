@@ -44,7 +44,6 @@ fn process_synthesizes_real_pcm_over_authenticated_stdio() {
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(11_025);
-    let presence_contour = std::env::var_os("ELOQUENCE_TEST_PRESENCE").is_some();
     let key = [0x5a; AUTH_KEY_LEN];
     let key_hex = key
         .iter()
@@ -90,12 +89,25 @@ fn process_synthesizes_real_pcm_over_authenticated_stdio() {
     await_response(&mut reader, 2);
 
     let mut payload = PayloadWriter::new();
-    payload.put_u8(u8::from(presence_contour));
+    payload.put_u8(0);
     send(
         &mut writer,
         Frame::new(MessageKind::SetPresenceContour, 15, payload.finish()),
     );
     await_response(&mut reader, 15);
+
+    // Contours belong to the caller's DLL, never the engine host as well.
+    for mode in [1, 2] {
+        let mut payload = PayloadWriter::new();
+        payload.put_u8(mode);
+        send(
+            &mut writer,
+            Frame::new(MessageKind::SetPresenceContour, 16, payload.finish()),
+        );
+        let response = read(&mut reader);
+        assert_eq!(response.request_id, 16);
+        assert_eq!(response.kind, MessageKind::ErrorResponse);
+    }
 
     let mut payload = PayloadWriter::new();
     payload.put_u64(9001);

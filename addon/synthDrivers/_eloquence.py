@@ -7,12 +7,14 @@ import logging
 import os
 
 import queue
+import struct
 import subprocess
 import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from ._eloquence_native import NativeHostConnection
+from ._eloquence_contours import Contour
 
 from . import _eloquence_job as _job
 
@@ -26,6 +28,7 @@ from . import _eloquence_dictionaries
 LOGGER = logging.getLogger(__name__)
 
 HOST_EXECUTABLE = "eloquence_host32.exe"
+CONTOUR_DLL = "eloquence_contours.dll" if struct.calcsize("P") == 8 else "eloquence_contours32.dll"
 AUTH_KEY_BYTES = 16
 STANDARD_SAMPLE_RATE = 11025
 NATIVE_SAMPLE_RATE = 16000
@@ -57,8 +60,19 @@ class AudioWorker(threading.Thread):
 		self._running = True
 		self._stopping = False
 		self._player_lock = threading.RLock()
+		# Owned by this worker; never destroy a DLL handle on another thread.
+		self._contour = getattr(client, "_contour", None)
+		self._contour_mode = _presence_contour
+		self._contour_sequence = None
 
 	def run(self) -> None:
+		try:
+			self._run_audio()
+		finally:
+			if self._contour is not None:
+				self._contour.close()
+
+	def _run_audio(self) -> None:
 		pending_audio: Optional[AudioChunk] = None
 		while self._running:
 			try:
@@ -73,8 +87,16 @@ class AudioWorker(threading.Thread):
 			if seq < self._client._sequence:
 				self._queue.task_done()
 				continue
+			if self._contour is not None and seq != self._contour_sequence:
+				self._contour.reset()
+				self._contour_sequence = seq
 
 			if data:
+				if self._contour is not None and self._contour_mode not in (0, 3):
+					data = self._contour.process(data)
+				chunk = (data, index, is_final, seq)
+				if is_final and self._contour is not None and self._contour_mode != 3:
+					self._contour.reset()
 				# Hold one real Audio Chunk so a following index-only event can use
 				# WavePlayer's completion callback without feeding a synthetic sample.
 				if pending_audio:
@@ -100,6 +122,9 @@ class AudioWorker(threading.Thread):
 					self._sync_and_invoke_index(index)
 				if is_final:
 					self._schedule_idle()
+			if is_final and self._contour is not None and self._contour_mode != 3:
+				# The old host reset at BeginGeneration, after each completed synthesis.
+				self._contour.reset()
 			self._queue.task_done()
 
 	def _feed_audio(self, data: bytes, index: Optional[int], is_final: bool) -> None:
@@ -124,6 +149,10 @@ class AudioWorker(threading.Thread):
 			with self._player_lock:
 				if not self._stopping:
 					if self._player:
+						if self._contour is not None and self._contour_mode == 3:
+							# v19.1 processed only audio actually submitted to playback.
+							# Keep history across utterances; cancellation resets filters.
+							data = self._contour.process(data)
 						self._player.feed(data, onDone=wrapped_on_done)
 		except FileNotFoundError:
 			LOGGER.warning("Sound device not found during feed")
@@ -202,6 +231,7 @@ class EloquenceHostClient:
 		self._audio_queue: "queue.Queue[Optional[AudioChunk]]" = queue.Queue()
 		self._player: Optional[nvwave.WavePlayer] = None
 		self._audio_worker: Optional[AudioWorker] = None
+		self._contour = None
 		self._running = threading.Event()
 		self._command_lock = threading.Lock()
 		self._stop_lock = threading.RLock()
@@ -294,15 +324,25 @@ class EloquenceHostClient:
 	def initialize_audio(self) -> None:
 		if self._player:
 			return
-		sample_rate = get_output_sample_rate()
-		if version_year >= 2025:
-			device = config.conf["audio"]["outputDevice"]
-			player = nvwave.WavePlayer(1, sample_rate, 16, outputDevice=device)
-		else:
-			device = config.conf["speech"]["outputDevice"]
-			nvwave.WavePlayer.MIN_BUFFER_MS = 1500
-			player = nvwave.WavePlayer(1, sample_rate, 16, outputDevice=device, buffered=True)
+		contour = Contour(
+			os.path.join(os.path.dirname(__file__), CONTOUR_DLL),
+			_sample_rate,
+			int(_presence_contour),
+		)
+		sample_rate = contour.output_rate
+		try:
+			if version_year >= 2025:
+				device = config.conf["audio"]["outputDevice"]
+				player = nvwave.WavePlayer(1, sample_rate, 16, outputDevice=device)
+			else:
+				device = config.conf["speech"]["outputDevice"]
+				nvwave.WavePlayer.MIN_BUFFER_MS = 1500
+				player = nvwave.WavePlayer(1, sample_rate, 16, outputDevice=device, buffered=True)
+		except Exception:
+			contour.close()
+			raise
 		self._player = player
+		self._contour = contour
 		# Keep shutdown markers and late audio isolated to the previous worker.
 		self._audio_queue = queue.Queue()
 		self._audio_worker = AudioWorker(player, self._audio_queue, self)
@@ -536,12 +576,14 @@ langs = {
 
 
 def initialize(indexCallback=None, sample_rate=None):
-	global onIndexReached, _sample_rate, _current_variant
+	global onIndexReached, _sample_rate, _current_variant, _presence_contour
 	eci_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "eloquence", "eci.dll"))
 	try:
 		onIndexReached = indexCallback
 		if sample_rate is not None:
 			_sample_rate = _normalize_sample_rate(sample_rate)
+		if _sample_rate != STANDARD_SAMPLE_RATE and _presence_contour == 3:
+			_presence_contour = 0
 		voice_conf = config.conf.get("speech", {}).get("eci", {})
 		language = voice_conf.get("voice", "enu")
 		data_directory = os.path.dirname(eci_path)
@@ -570,7 +612,6 @@ def initialize(indexCallback=None, sample_rate=None):
 			"sampleRate": _sample_rate,
 		}
 		response = _client.send_command("initialize", **payload)
-		_client.send_command("setPresenceContour", enabled=_presence_contour)
 		_client.initialize_audio()
 		_ensure_synth_worker()
 	except Exception:
@@ -647,20 +688,18 @@ def get_output_sample_rate():
 
 
 def set_presence_contour(enabled):
-	"""Select Raw (0), Smooth (1), or Presence (2). Classic mode has one contour."""
+	"""Select Raw (0), legacy Smooth (1), Presence (2), or Classic treble (3)."""
 	global _presence_contour
 	enabled = int(enabled)
-	if enabled not in (0, 1, 2):
+	if enabled not in (0, 1, 2, 3) or (enabled == 3 and _sample_rate != STANDARD_SAMPLE_RATE):
 		raise ValueError(f"unsupported sound contour: {enabled}")
 	if enabled == _presence_contour:
 		return
 	if _client._host:
 		_client.stop()
-		_client.send_command("setPresenceContour", enabled=enabled)
-		if _sample_rate == STANDARD_SAMPLE_RATE:
-			_client.close_audio()
+		_client.close_audio()
 	_presence_contour = enabled
-	if _client._host and _sample_rate == STANDARD_SAMPLE_RATE:
+	if _client._host:
 		_client.initialize_audio()
 
 
@@ -677,7 +716,7 @@ def _normalize_sample_rate(value):
 
 def set_sample_rate(value):
 	"""Restart ECI into its selected native rate while preserving synth state."""
-	global _sample_rate
+	global _sample_rate, _presence_contour
 	rate = _normalize_sample_rate(value)
 	if rate == _sample_rate:
 		return
@@ -690,6 +729,9 @@ def set_sample_rate(value):
 		_client.stop()
 		_client.shutdown()
 	_sample_rate = rate
+	if rate != STANDARD_SAMPLE_RATE and _presence_contour == 3:
+		# The driver reapplies the independently saved native contour after restart.
+		_presence_contour = 0
 	if not was_running:
 		return
 	initialize(callback, sample_rate=rate)

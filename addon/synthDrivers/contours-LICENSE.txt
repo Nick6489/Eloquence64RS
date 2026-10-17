@@ -1,0 +1,9 @@
+Eloquence contours is licensed under GPL-2.0-only.
+Source: https://github.com/Nick6489/eloquence-contours
+Revision: 24b9cb121aa3c4f55a6aaacd640f1fe8f03e020a
+
+The DLL and ctypes adapter are built/copied from this revision. The full
+license text is included in contours-COPYING.txt alongside this notice.
+
+Presence treble is a literal port of hozosch/eloquence_64 v19.1 upsampler.c:
+https://github.com/hozosch/eloquence_64/blob/f60b6d55da253e4e977e7ea3b0a214ad9bce4a95/upsampler.c

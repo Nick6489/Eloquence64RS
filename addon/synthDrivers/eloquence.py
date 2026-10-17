@@ -213,7 +213,7 @@ def _coerce_sound_contour_setting(value):
 	parts = str(value).replace(",", "|").split("|")
 	if len(parts) != 2:
 		return "raw|raw"
-	classic = parts[0] if parts[0] in {"raw", "presence"} else "raw"
+	classic = parts[0] if parts[0] in {"raw", "presence", "treble"} else "raw"
 	native = parts[1] if parts[1] in {"raw", "presence", "smooth"} else "raw"
 	return f"{classic}|{native}"
 
@@ -1436,8 +1436,11 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _get_availableSoundcontours(self):
 		parts = self._soundContour.split("|")
 		index = 0 if self._sampleRate == "11025" else 1
-		labels = {"raw": _("Raw"), "presence": _("Presence"), "smooth": _("Smooth")}
-		options = ("raw", "presence") if index == 0 else ("raw", "presence", "smooth")
+		labels = {
+			"raw": _("Raw"), "presence": _("Presence"), "smooth": _("Smooth"),
+			"treble": _("Presence treble"),
+		}
+		options = ("raw", "presence", "treble") if index == 0 else ("raw", "presence", "smooth")
 		result = {}
 		for option in options:
 			selection = parts.copy()
@@ -1462,7 +1465,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _apply_sound_contour(self):
 		index = 0 if self._sampleRate == "11025" else 1
 		selection = self._soundContour.split("|")[index]
-		_eloquence.set_presence_contour({"raw": 0, "smooth": 1, "presence": 2}[selection])
+		_eloquence.set_presence_contour({"raw": 0, "smooth": 1, "presence": 2, "treble": 3}[selection])
 
 	def _refresh_sound_contour_choices(self):
 		# NVDA restores synth settings before creating wx.App at startup.

@@ -1,5 +1,5 @@
 {
-  "version": "19.5-RS",
-  "download_url": "https://github.com/Nick6489/Eloquence64RS/releases/download/v19.5-RS/Eloquence-19.5-RS.nvda-addon",
-  "changelog": "Eloquence64RS 19.5 adds native 16 kHz synthesis, selectable sound contours, faster native loading, and fixes persistent silence after switching synthesizers or changing audio settings during speech."
+  "version": "19.5.1-RS",
+  "download_url": "https://github.com/Nick6489/Eloquence64RS/releases/download/v19.5.1-RS/Eloquence-19.5.1-RS.nvda-addon",
+  "changelog": "19.5.1-RS moves sound contours into the independent Eloquence contours DLL, preserving the existing sound and settings. It also adds Presence treble at 11.025 kHz, faithfully ported from hozosch's v19.1 resampler. A note from Nick: I couldn't help myself."
 }

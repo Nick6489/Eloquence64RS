@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-_DEVELOPMENT_VERSION = "v19.5-RS-dev"
+_DEVELOPMENT_VERSION = "v19.5.1-RS-dev"
 
 
 def _run_git(*args):

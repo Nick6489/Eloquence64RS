@@ -69,6 +69,12 @@ if not host_exe.exists():
 	Exit(1)
 
 # --- Generate manifest ----------------------------------------------------
+for name in ("eloquence_contours.dll", "eloquence_contours32.dll"):
+	contour_dll = addonDir / "synthDrivers" / name
+	if not contour_dll.exists():
+		print(f"ERROR: {contour_dll} not found. Run build_contours.cmd first.", file=sys.stderr)
+		Exit(1)
+
 
 manifest = env.NVDAManifest(env.File(str(addonDir / "manifest.ini")), "manifest.ini.tpl")
 env.Depends(manifest, "buildVars.py")

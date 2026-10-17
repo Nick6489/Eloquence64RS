@@ -3,7 +3,8 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 pub const MAGIC: [u8; 4] = *b"ELQH";
-pub const VERSION: u16 = 3;
+// Version 4 guarantees raw PCM: contours now run in the client's DLL.
+pub const VERSION: u16 = 4;
 pub const HEADER_LEN: usize = 20;
 pub const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
 pub const AUTH_KEY_LEN: usize = 16;
@@ -338,7 +339,7 @@ mod tests {
         assert_eq!(
             frame.encode().unwrap(),
             vec![
-                b'E', b'L', b'Q', b'H', 3, 0, 0x13, 0, 0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66,
+                b'E', b'L', b'Q', b'H', 4, 0, 0x13, 0, 0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66,
                 0x55, 2, 0, 0, 0, 0xaa, 0xbb,
             ]
         );

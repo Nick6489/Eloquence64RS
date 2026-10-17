@@ -175,14 +175,10 @@ class AudioWorkerTests(unittest.TestCase):
 			[
 				"ensure_started",
 				"send_command",
-				"send_command",
 				"initialize_audio",
 			],
 		)
-		self.assertEqual(
-			client.send_command.call_args_list[1],
-			unittest.mock.call("setPresenceContour", enabled=True),
-		)
+		self.assertEqual(client.send_command.call_count, 1)
 		self.assertEqual(client.send_command.call_args_list[0].kwargs["sampleRate"], 16000)
 		self.assertEqual(client.send_command.call_args_list[0].kwargs["dictionaryDirectory"], "")
 		module._ensure_synth_worker.assert_called_once_with()
@@ -222,14 +218,13 @@ class AudioWorkerTests(unittest.TestCase):
 			client.method_calls,
 			[
 				unittest.mock.call.stop(),
-				unittest.mock.call.send_command("setPresenceContour", enabled=True),
 				unittest.mock.call.close_audio(),
 				unittest.mock.call.initialize_audio(),
 			],
 		)
 		self.assertEqual(module.get_output_sample_rate(), module.PRESENCE_SAMPLE_RATE)
 
-	def test_native_presence_switch_keeps_16_khz_player(self):
+	def test_native_presence_switch_reopens_dll_at_16_khz(self):
 		module = _load_client_module()
 		module._sample_rate = module.NATIVE_SAMPLE_RATE
 		client = Mock()
@@ -242,7 +237,8 @@ class AudioWorkerTests(unittest.TestCase):
 			client.method_calls,
 			[
 				unittest.mock.call.stop(),
-				unittest.mock.call.send_command("setPresenceContour", enabled=True),
+				unittest.mock.call.close_audio(),
+				unittest.mock.call.initialize_audio(),
 			],
 		)
 		self.assertEqual(module.get_output_sample_rate(), module.NATIVE_SAMPLE_RATE)
@@ -272,6 +268,17 @@ class AudioWorkerTests(unittest.TestCase):
 
 		self.assertEqual(module.get_sample_rate(), module.NATIVE_SAMPLE_RATE)
 		client.send_command.assert_not_called()
+
+	def test_treble_is_rejected_at_native_rate_and_cleared_during_rate_restart(self):
+		module = _load_client_module()
+		module._sample_rate = module.NATIVE_SAMPLE_RATE
+		with self.assertRaises(ValueError):
+			module.set_presence_contour(3)
+		module._sample_rate = module.STANDARD_SAMPLE_RATE
+		module._presence_contour = 3
+		module._client._host = None
+		module.set_sample_rate(module.NATIVE_SAMPLE_RATE)
+		self.assertEqual(module.get_presence_contour(), 0)
 
 	def test_sample_rate_restart_restores_live_engine_state(self):
 		module = _load_client_module()

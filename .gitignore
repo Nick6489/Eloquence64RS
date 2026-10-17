@@ -18,6 +18,8 @@ addon/synthDrivers/eloquence/PTB.SYN
 
 # Compiled native host executable (built from native_host/ with Rust)
 addon/synthDrivers/eloquence_host32.exe
+addon/synthDrivers/eloquence_contours.dll
+addon/synthDrivers/eloquence_contours32.dll
 
 # Legacy build artifacts
 eloquence_original.nvda-addon
@@ -76,6 +78,7 @@ coverage.xml
 .env
 .venv
 /native_host/target/
+/contours/target/
 env/
 venv/
 ENV/

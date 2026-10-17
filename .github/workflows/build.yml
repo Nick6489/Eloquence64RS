@@ -25,7 +25,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: i686-pc-windows-msvc
+          targets: i686-pc-windows-msvc,x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
       - name: Set up uv
@@ -71,6 +71,17 @@ jobs:
       - name: Build 32-bit native host
         run: build_host.cmd
         shell: cmd
+
+      - name: Build independent contour DLLs
+        run: build_contours.cmd
+        shell: cmd
+
+      - name: Test contour module and reference PCM
+        run: |
+          cargo test --locked --manifest-path build/contours/Cargo.toml --target i686-pc-windows-msvc
+          cargo test --locked --manifest-path build/contours/Cargo.toml --target x86_64-pc-windows-msvc
+          python -m unittest discover -s build/contours/python
+        shell: pwsh
 
       - name: Test Python
         run: runpytest.bat

@@ -6,8 +6,8 @@ back to NVDA.
 
 ## Project status
 
-The current stable release is 19.5-RS. See the
-[19.5-RS release notes](docs/release-notes/v19.5-RS.md) for changes and upgrade details.
+The current stable release is 19.5.1-RS. See the
+[19.5.1-RS release notes](docs/release-notes/v19.5.1-RS.md) for changes and upgrade details.
 
 This is an unofficial, unsupported, community-maintained add-on, provided as
 is and used at your own risk. Release packages include legacy proprietary
@@ -140,20 +140,27 @@ host matches the installed add-on.
 ## Building
 
 Prerequisites are 64-bit Python 3.13, [uv](https://docs.astral.sh/uv/), a stable
-Rust MSVC toolchain, and its `i686-pc-windows-msvc` target:
+Rust MSVC toolchain, and its `i686-pc-windows-msvc` and
+`x86_64-pc-windows-msvc` targets:
 
 ```powershell
-rustup target add i686-pc-windows-msvc
+rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 git submodule update --init
 python fetch_eci.py
+build_contours.cmd
 build_host.cmd
 scons.bat
 ```
 
 `build_host.cmd` builds the statically linked i686 Rust release executable and
 copies it to `addon/synthDrivers/eloquence_host32.exe`. `scons.bat` validates
-that this executable and the proprietary Eloquence files exist before creating
+that this executable, the contour DLL, and the proprietary Eloquence files exist before creating
 the `.nvda-addon` package.
+
+`build_contours.cmd` builds a pinned revision from the independent
+[Eloquence contours repository](https://github.com/Nick6489/eloquence-contours).
+The 64-bit add-on applies its unchanged contours through the DLL; the 32-bit
+host sends raw PCM. See the [19.5.1-RS build notes](docs/release-notes/v19.5.1-RS.md).
 
 Development checks:
 
