@@ -4,7 +4,7 @@ cd /d "%~dp0"
 rem Pinned independent module release; never build an unreviewed moving branch.
 set "contour_revision=24b9cb121aa3c4f55a6aaacd640f1fe8f03e020a"
 if not exist "build\contours\.git" (
-    git clone --no-checkout https://github.com/Nick6489/eloquence-contours.git build\contours
+    git clone https://github.com/Nick6489/eloquence-contours.git build\contours
     if errorlevel 1 exit /b 1
 )
 git -C build\contours diff --quiet HEAD --
