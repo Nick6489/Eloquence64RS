@@ -108,7 +108,9 @@ jobs:
           archive: false
 
       - name: Upload to release
-        if: github.event_name == 'release'
+        # Manually published releases already carry their verified installer.
+        # Preserve read-only workflow permissions and avoid replacing that asset.
+        if: github.event_name == 'release' && !contains(join(github.event.release.assets.*.name, ','), '.nvda-addon')
         uses: softprops/action-gh-release@v2
         with:
           files: |
